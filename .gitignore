@@ -1,1 +1,6 @@
 .vscode/
+Teensy4.1-RCJ2027/.pio/
+Teensy4.1-RCJ2027/.vscode/.browse_c_cpp.db*
+Teensy4.1-RCJ2027/.vscode/c_cpp_properties.json
+Teensy4.1-RCJ2027/.vscode/launch.json
+Teensy4.1-RCJ2027/.vscode/ipch
