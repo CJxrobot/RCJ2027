@@ -20,6 +20,10 @@
 #define SLP 11
 #define BALL_POSESSION 38
 
+#define PIN_0 0
+#define PIN_1 1
+
+
 struct GyroData {
     float heading = 0.0f;
     float pitch = 0.0f;
