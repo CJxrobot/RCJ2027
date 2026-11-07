@@ -34,10 +34,9 @@ void loop() {
   bool scanning = false;
 
   // ===== Line sensor (disabled) =====
-  /*
   fast_update_line_sensor();
   scanning = calibrate_line_sensor(); // prints its own data while scanning
-  */
+  
 
   // ===== IR ball sensor =====
   update_ball_sensor();
@@ -49,13 +48,12 @@ void loop() {
     printIrGroup("FAR :", 1); // TSSP4038
     printIrGroup("NEAR:", 2); // TSOP4840
 
-    /*
     Serial.print("LINE:");
     for (int ch = 0; ch < 16; ch++) {
       Serial.print((lineState >> ch) & 1);
     }
     Serial.println();
-    */
+    
 
     Serial.println();
   }

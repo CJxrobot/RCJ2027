@@ -34,7 +34,20 @@ void setup() {
 
 void loop() {
   update_gyro_sensor();
-
+  Serial.println("loop");
+  if(digitalRead(38) == LOW){
+    Serial.println("Ball Possession");
+  }
+  else{
+    Serial.println("No Ball Possession");
+  }
+  /*
+  SetMotorSpeed(1, 50);
+  SetMotorSpeed(2, 50);
+  SetMotorSpeed(3, 50);
+  SetMotorSpeed(4, 50);
+  */
+  Vector_Motion(40, 40, 0);    
   // OLED refresh is slow (~25 ms), so only redraw every 100 ms
   static uint32_t lastDisplay = 0;
   if (millis() - lastDisplay >= 100) {
