@@ -1,5 +1,6 @@
 #include <core_act.h>
 GyroData gyroData;
+TopMaixData topmaixData;
 RobotState robot;
 // --- OLED OBJECT ---
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -10,6 +11,8 @@ static const uint8_t motorPwmPins[MOTOR_COUNT] = MOTOR_PWM_PINS;
 void core_act_init() {
     Serial.begin(115200);
     Serial2.begin(115200);
+    Serial3.begin(115200);
+    Serial3.setTimeout(50); // ms, camera answers once per frame
     Serial8.begin(921600);
     pinMode(LED_BUILTIN, OUTPUT);
 
@@ -80,6 +83,25 @@ void update_gyro_sensor(){
   }
 }
 
+// Packet: CC DD found angleL angleH distL distH checksum EE, checksum = sum of bytes [1..6]
+void readTopMaix_polar() {
+  uint8_t buf[9];
+  while (Serial3.available()) Serial3.read(); // drop stale bytes
+  Serial3.write(0xDD);                        // request
+
+  uint8_t checksum = 0;
+  bool ok = Serial3.readBytes(buf, 9) == 9 &&
+            buf[0] == 0xCC && buf[1] == 0xDD && buf[8] == 0xEE;
+  for (int i = 1; i <= 6; i++) checksum += buf[i];
+
+  topmaixData.valid = ok && checksum == buf[7];
+  if (!topmaixData.valid) return;
+
+  topmaixData.goal_found = buf[2];
+  topmaixData.goal_angle = buf[3] | (buf[4] << 8);
+  topmaixData.goal_dist  = buf[5] | (buf[6] << 8);
+}
+
 void drawMessage(const char* msg) {
     display.clearDisplay();
     display.setTextSize(2);
@@ -128,11 +150,11 @@ static float headingCorrection(float target_heading) {
 }
 
 void RobotIKControl(float vx, float vy, float omega) {
-  // Inverse kinematics: wheel speed = projection of (vx, vy) on wheel axis + omega
-  SetMotorSpeed(1, -0.643f * vx + 0.766f * vy + omega);
-  SetMotorSpeed(2, -0.643f * vx - 0.766f * vy + omega);
-  SetMotorSpeed(3,  0.707f * vx - 0.707f * vy + omega);
-  SetMotorSpeed(4,  0.707f * vx + 0.707f * vy + omega);
+  // Invert translation signs for the positive-right/positive-forward command convention.
+  SetMotorSpeed(1,  0.643f * vx - 0.766f * vy + omega);
+  SetMotorSpeed(2,  0.643f * vx + 0.766f * vy + omega);
+  SetMotorSpeed(3, -0.707f * vx + 0.707f * vy + omega);
+  SetMotorSpeed(4, -0.707f * vx - 0.707f * vy + omega);
 }
 
 // Robot-frame motion; rot_V nudges the target heading, clamped to 45..135

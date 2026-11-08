@@ -38,13 +38,23 @@ struct RobotState {
     float P_factor = 0.5f;           // omega per degree of heading error
 };
 
+// Top camera (MaixCam, Serial3); angle/dist = 0xFFFF when goal not found
+struct TopMaixData {
+    bool valid = false;
+    bool goal_found = false;
+    uint16_t goal_angle = 0xFFFF; // deg 0-359
+    uint16_t goal_dist = 0xFFFF;
+};
+
 extern GyroData gyroData;
+extern TopMaixData topmaixData;
 extern RobotState robot;
 extern Adafruit_SSD1306 display;
 
 void core_act_init();
 void update_gyro_sensor();
 void drawMessage(const char* msg);
+void readTopMaix_polar();
 
 // --- Motors ---
 void SetMotorSpeed(uint8_t port, float speed);   // port 1-4, speed -100..100
