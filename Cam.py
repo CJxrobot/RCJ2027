@@ -238,7 +238,7 @@ while not app.need_exit():
     if ser.available():
         requests = ser.read()
 
-        #print(requests)
+        print("requests")
         if requests:
             for request in requests:
                 if request == 0xDD:

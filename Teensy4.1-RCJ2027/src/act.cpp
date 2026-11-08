@@ -34,24 +34,19 @@ void setup() {
 
 void loop() {
   update_gyro_sensor();
-  Serial.println("loop");
+  readTopMaix_polar();
   if(digitalRead(38) == LOW){
     Serial.println("Ball Possession");
   }
   else{
     Serial.println("No Ball Possession");
   }
-  /*
-  SetMotorSpeed(1, 50);
-  SetMotorSpeed(2, 50);
-  SetMotorSpeed(3, 50);
-  SetMotorSpeed(4, 50);
-  */
-  Vector_Motion(40, 40, 0);    
+  Serial.printf("Goal found: %d, angle: %d, dist: %d\n", topmaixData.goal_found, topmaixData.goal_angle, topmaixData.goal_dist);
   // OLED refresh is slow (~25 ms), so only redraw every 100 ms
   static uint32_t lastDisplay = 0;
   if (millis() - lastDisplay >= 100) {
     lastDisplay = millis();
     drawPage();
   }
+  delay(100);
 }

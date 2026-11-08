@@ -74,7 +74,7 @@ void fast_update_line_sensor() {
 
 // Call every loop after fast_update_line_sensor().
 // 1st press: LED13 blinks, record min/max of each sensor
-// 2nd press: LED13 off, save avg_ls to EEPROM, show result for 1 s
+// 2nd press: LED13 off, save avg_ls to EEPROM, show result for 2 s
 // Returns true while scanning
 bool calibrate_line_sensor() {
     static bool scanning = false;
@@ -102,19 +102,25 @@ bool calibrate_line_sensor() {
             }
             EEPROM.put(0, avg_ls);
             Serial.println("Line scan saved");
-            delay(1000); // keep result on screen
+            delay(2000); // keep result on screen
         }
     }
     lastBtn = btn;
 
     if (scanning) {
         for (int i = 0; i < LS_COUNT; i++) {
-            if (lsRaw[i] > max_ls[i]) max_ls[i] = lsRaw[i];
-            if (lsRaw[i] < min_ls[i]) min_ls[i] = lsRaw[i];
+            if (lsRaw[i] > max_ls[i]){
+                max_ls[i] = lsRaw[i];
+                Serial.printf("%d find max %d\n", i, max_ls[i]);
+            }
+            if (lsRaw[i] < min_ls[i]){
+                min_ls[i] = lsRaw[i];
+                Serial.printf("%d find min %d\n", i, min_ls[i]);
+            } 
         }
 
         // Blink LED and print raw data every 100 ms
-        if (millis() - blinkTimer > 100) {
+        if (millis() - blinkTimer > 50) {
             blinkTimer = millis();
             digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
             Serial.print("RAW:");

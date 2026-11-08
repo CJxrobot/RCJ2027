@@ -27,7 +27,7 @@ void printIrGroup(const char* name, int firstPort) {
 
 void setup() {
   core_sense_init();
-  analogWrite(LS_BRIGHTNESS, 180); // line sensor LED brightness (0-255)
+  analogWrite(LS_BRIGHTNESS, 255); // line sensor LED brightness (0-255)
 }
 
 void loop() {
