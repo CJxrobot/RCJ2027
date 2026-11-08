@@ -1,0 +1,8 @@
+id: x
+name: Camera
+version: 1.0.0
+author: C
+icon: ''
+desc: Cam
+files:
+  - Cam.py
