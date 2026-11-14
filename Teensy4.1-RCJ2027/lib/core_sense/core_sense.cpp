@@ -14,6 +14,11 @@ uint32_t lineState = 0xFFFFFFFF;
 
 void core_sense_init() {
     Serial.begin(115200);
+    Serial8.begin(921600); // to act core
+    pinMode(PIN_0, OUTPUT);
+    pinMode(PIN_1, OUTPUT);
+    digitalWrite(PIN_0, LOW);
+    digitalWrite(PIN_1, LOW);
     pinMode(LINE_SCAN_BUTTON, INPUT_PULLUP);
     for (int i = 0; i < IR_COUNT; i++) {
         pinMode(IR_PINS[i], INPUT);
@@ -26,6 +31,7 @@ void core_sense_init() {
     pinMode(LS_S2, OUTPUT);
     pinMode(LS_S3, OUTPUT);
     pinMode(LED_BUILTIN, OUTPUT);
+    pinMode(LS_M1, INPUT);
 
     // Load thresholds saved by calibrate_line_sensor(); erased EEPROM reads 0xFFFF
     EEPROM.get(0, avg_ls);
@@ -70,6 +76,22 @@ void fast_update_line_sensor() {
     // Bit clears only if below threshold in this scan AND the previous one
     lineState = prevRaw | rawState;
     prevRaw   = rawState;
+}
+
+// Call every loop after fast_update_line_sensor().
+// Line seen: PIN_0/PIN_1 HIGH, then send packet AA s0 s1 s2 s3 checksum (sum of s0-s3)
+// No line:   PIN_0/PIN_1 LOW, nothing sent
+void send_line_state() {
+    bool line = (lineState & 0xFFFF) != 0xFFFF;
+    digitalWriteFast(PIN_0, line);
+    digitalWriteFast(PIN_1, line);
+    if (!line) return;
+
+    uint8_t pkt[6] = {0xAA,
+                      (uint8_t)(lineState),       (uint8_t)(lineState >> 8),
+                      (uint8_t)(lineState >> 16), (uint8_t)(lineState >> 24), 0};
+    for (int i = 1; i <= 4; i++) pkt[5] += pkt[i];
+    Serial8.write(pkt, 6);
 }
 
 // Call every loop after fast_update_line_sensor().
