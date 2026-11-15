@@ -288,10 +288,6 @@ while not app.need_exit():
 
         if now - last_print >= 200:
             last_print = now
-            print(
-                "found=", goal_found,
-                "angle=", goal_angle,
-                "dist=", goal_dist
-            )
+        #    print("found=", goal_found,"angle=", goal_angle,"dist=", goal_dist)
 
-        disp.show(img)
+        #disp.show(img)
