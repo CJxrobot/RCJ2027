@@ -234,7 +234,9 @@ while not app.need_exit():
         checksum,
         0xEE
     ])
+    ser.write(packet)
 
+    '''
     if ser.available():
         requests = ser.read()
 
@@ -242,9 +244,9 @@ while not app.need_exit():
         if requests:
             for request in requests:
                 if request == 0xDD:
-                    ser.write(packet)
+                ser.write(packet)
                     break
-
+    '''
     if DEBUG_VIEW:
         img.draw_circle(
             CENTER_X, CENTER_Y, R_MIN,

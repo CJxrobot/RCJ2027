@@ -57,7 +57,12 @@ extern Adafruit_SSD1306 display;
 void core_act_init();
 void update_gyro_sensor();
 void drawMessage(const char* msg);
-void readTopMaix_polar();
+void readTopMaix_polar();  // old protocol: send 0xDD, wait for reply (blocking)
+
+// --- Top camera, new protocol: camera sends every frame, Serial3 RX by DMA ---
+// After camera_dma_begin(), readTopMaix_polar() no longer works
+void camera_dma_begin();
+bool read_camera();        // non-blocking, true when topmaixData got a new packet
 
 // --- Line (from sense core, Serial8) ---
 bool line_flag();                       // true if PIN_0 or PIN_1 is HIGH

@@ -1,4 +1,5 @@
 #include <core_act.h>
+#include <DMAChannel.h>
 GyroData gyroData;
 TopMaixData topmaixData;
 RobotState robot;
@@ -107,6 +108,56 @@ void readTopMaix_polar() {
   topmaixData.goal_found = buf[2];
   topmaixData.goal_angle = buf[3] | (buf[4] << 8);
   topmaixData.goal_dist  = buf[5] | (buf[6] << 8);
+}
+
+// ===== Top camera over DMA (Serial3 = LPUART2) =====
+// DMA copies every received byte into a ring buffer, no CPU and no interrupt
+#define CAM_BUF 64 // power of 2, buffer must be aligned to its size
+static volatile uint8_t camRx[CAM_BUF] __attribute__((aligned(CAM_BUF)));
+static DMAChannel camDma;
+
+void camera_dma_begin() {
+  Serial3.begin(115200);                                  // pins + baud rate
+  NVIC_DISABLE_IRQ(IRQ_LPUART2);                          // Serial3 interrupt off,
+  LPUART2_CTRL &= ~(LPUART_CTRL_RIE | LPUART_CTRL_ILIE);  // DMA takes the bytes
+  LPUART2_WATER = LPUART_WATER_RXWATER(0);                // DMA request for every byte
+
+  camDma.begin(true);
+  camDma.source((volatile const unsigned char&)LPUART2_DATA);
+  camDma.destinationCircular(camRx, CAM_BUF);             // wraps around, runs forever
+  camDma.triggerAtHardwareEvent(DMAMUX_SOURCE_LPUART2_RX);
+  camDma.enable();
+  LPUART2_BAUD |= LPUART_BAUD_RDMAE;                      // UART RX -> DMA requests on
+}
+
+// Parse the bytes DMA received since the last call
+bool read_camera() {
+  static uint8_t buf[9];
+  static int n = 0;
+  static uint32_t tail = 0; // next byte to parse
+  bool got = false;
+
+  uint32_t head = (uint32_t)camDma.TCD->DADDR - (uint32_t)camRx; // next byte DMA writes
+  while (tail != head) {
+    uint8_t b = camRx[tail];
+    tail = (tail + 1) % CAM_BUF;
+    if (n == 0 && b != 0xCC) continue;                      // wait for start byte
+    if (n == 1 && b != 0xDD) { n = (b == 0xCC); continue; } // resync
+    buf[n++] = b;
+    if (n < 9) continue;
+
+    n = 0;
+    uint8_t checksum = 0;
+    for (int i = 1; i <= 6; i++) checksum += buf[i];
+    if (buf[8] != 0xEE || checksum != buf[7]) continue;
+
+    topmaixData.valid      = true;
+    topmaixData.goal_found = buf[2];
+    topmaixData.goal_angle = buf[3] | (buf[4] << 8);
+    topmaixData.goal_dist  = buf[5] | (buf[6] << 8);
+    got = true;
+  }
+  return got;
 }
 
 // ===== Line (from sense core) =====
