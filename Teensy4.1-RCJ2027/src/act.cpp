@@ -54,7 +54,7 @@ void setup() {
 // Line seen: motors stop (interrupt), wait for UART data, then move away from the line
 #define FORWARD_SPEED 50
 #define AVOID_SPEED 40
-
+/*
 void loop() {
   static bool avoiding = false;
   static float awayAngle = 0;
@@ -108,4 +108,10 @@ void loop() {
     lastDisplay = millis();
     drawPage();
   }
+}*/
+
+void loop(){
+  update_gyro_sensor(); // Vector_Motion holds heading with the gyro
+  Vector_Motion(0, 30, 0); // no line: move forward (90 deg)
 }
+
