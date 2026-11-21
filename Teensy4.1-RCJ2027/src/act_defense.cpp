@@ -4,12 +4,13 @@
 // Defense, act core
 // Front inner on the line -> move backward
 // Front outer on the line -> move forward
-// Back sensors (out/mid/in in a row):
-//   some see the line  -> horizontal line behind -> move backward
-//   all three see it   -> vertical line          -> stop completely
-// Sideways: default speed, stop with the OUT sensor on the side line
-//   out on the line       -> stop here
-//   mid or in on the line -> back off until out sees the line again
+// Outer sensors R_out / B_out / L_out are ignored (sense core never reports them)
+// Back sensors (mid/in in a row):
+//   one sees the line  -> horizontal line behind -> move backward
+//   both see it        -> vertical line          -> stop completely
+// Sideways: default speed, stop with the MID sensor on the side line
+//   mid on the line -> stop here
+//   in on the line  -> back off until mid sees the line again
 // The side limits only cap speed toward that line, never push the robot into it
 // While a side sensor sees the line, the robot never moves backward (curved side line)
 // Camera (goal behind, 270 = centre, 0 = right, 180 = left):
@@ -29,18 +30,18 @@
 
 // Sensors as lineState bits (mux 2 channel + 16)
 #define M2(ch) (1UL << (16 + (ch)))
-#define FRONT_IN  M2(14)
-#define FRONT_OUT M2(15)
-#define BACK  (M2(8) | M2(7) | M2(6)) // out, mid, in
+#define FRONT_IN  M2(7)
+#define FRONT_OUT M2(11)
+#define BACK  (M2(4) | M2(3)) // mid, in (B_out ignored)
 
 // One side line: its sensors and backing-off memory
 struct Side {
-  uint32_t out, mid, in;
+  uint32_t mid, in;
   bool backing;
   uint32_t lastSeen;
 };
-Side rightSide = {M2(0), M2(1), M2(2), false, 0};
-Side leftSide  = {M2(5), M2(4), M2(3), false, 0};
+Side rightSide = {M2(14), M2(13), false, 0}; // mid, in (R_out ignored)
+Side leftSide  = {M2(1),  M2(0),  false, 0}; // mid, in (L_out ignored)
 
 // true if any sensor in mask sees the line (bit = 0)
 bool seen(uint32_t state, uint32_t mask) {
@@ -49,16 +50,16 @@ bool seen(uint32_t state, uint32_t mask) {
 
 // Max speed toward a side line (negative = move away from it)
 float sideLimit(Side& s, uint32_t state) {
-  bool out = seen(state, s.out);
-  bool deep = seen(state, s.mid | s.in);
+  bool mid = seen(state, s.mid);
+  bool in  = seen(state, s.in);
 
-  if (out || deep) s.lastSeen = millis();
-  if (deep) s.backing = true;                          // too far over the line
-  if (out && !deep) s.backing = false;                 // back at the out sensor
+  if (mid || in) s.lastSeen = millis();
+  if (in) s.backing = true;                               // too far over the line
+  if (mid && !in) s.backing = false;                      // back at the mid sensor
   if (millis() - s.lastSeen > LOST_MS) s.backing = false; // line lost, give up
 
-  if (s.backing) return -BACK_SPEED; // back off until out sees the line
-  if (out)       return 0;           // out on the line: stay here
+  if (s.backing) return -BACK_SPEED; // back off until mid sees the line
+  if (mid)       return 0;           // mid on the line: stay here
   return 1000;                       // no line: no limit
 }
 
@@ -88,9 +89,9 @@ void drawDebug(uint32_t state) {
   else                        display.println("Goal  none");
   display.printf("Flag  %d\n", line_flag());
   display.printf("Front in %c out %c\n", mark(state, FRONT_IN), mark(state, FRONT_OUT));
-  display.printf("Left  o%c m%c i%c\n", mark(state, leftSide.out), mark(state, leftSide.mid), mark(state, leftSide.in));
-  display.printf("Right o%c m%c i%c\n", mark(state, rightSide.out), mark(state, rightSide.mid), mark(state, rightSide.in));
-  display.printf("Back  o%c m%c i%c\n", mark(state, M2(8)), mark(state, M2(7)), mark(state, M2(6)));
+  display.printf("Left  m%c i%c\n", mark(state, leftSide.mid), mark(state, leftSide.in));
+  display.printf("Right m%c i%c\n", mark(state, rightSide.mid), mark(state, rightSide.in));
+  display.printf("Back  m%c i%c\n", mark(state, M2(4)), mark(state, M2(3)));
   display.display();
 }
 
@@ -123,9 +124,9 @@ void loop() {
   read_line_state(state);                // newest packet from sense core
   if (!line_flag()) state = 0xFFFFFFFF;  // flag LOW = no line anywhere
 
-  // Back sensors: all three on the line = vertical line -> stop completely
+  // Back sensors: mid and in both on the line = vertical line -> stop completely
   int back = __builtin_popcount(~state & BACK); // back sensors seeing the line
-  if (back == 3) {
+  if (back == 2) {
     Vector_Motion(0, 0, 0);
     return;
   }
@@ -139,8 +140,7 @@ void loop() {
   else if (back > 0)   vy = -SPEED; // horizontal line behind -> backward
 
   // At a side line the curve also reaches the front sensors: never move backward there
-  bool atSide = seen(state, rightSide.out | rightSide.mid | rightSide.in |
-                            leftSide.out  | leftSide.mid  | leftSide.in) ||
+  bool atSide = seen(state, rightSide.mid | rightSide.in | leftSide.mid | leftSide.in) ||
                 rightSide.backing || leftSide.backing;
   if (atSide) vy = max(vy, 0.0f);
 

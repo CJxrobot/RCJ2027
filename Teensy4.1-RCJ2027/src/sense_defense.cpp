@@ -6,27 +6,58 @@
 //   bit 0-15  = mux 1 channel 0-15
 //   bit 16-31 = mux 2 channel 0-15
 
-#define M2_UNUSED (0x3E00UL << 16) // mux 2 channel 9-13 have no sensor
+#define M2_UNUSED (0x1740UL << 16) // mux 2 channel 6, 8, 9, 10, 12 have no sensor
+#define M2_IGNORE (0x8024UL << 16) // R_out 15, B_out 5, L_out 2: read but never reported
 #define DEBUG 1                    // 1 = print sensor data every 100 ms
 
-// Debug print: raw value and line bit (0 = line) for one mux, channel 0-15
-void printMux(const char* name, int first) {
-  Serial.print(name);
-  for (int ch = 0; ch < 16; ch++) {
-    Serial.printf("%5d%c", lsRaw[first + ch], (lineState >> (first + ch)) & 1 ? ' ' : 'L');
-  }
-  Serial.println();
+// Mux 2 sensor names for the debug print, same as line_sensing.cpp
+struct M2Sensor { const char* name; uint8_t ch; };
+const M2Sensor M2_MAP[] = {
+  {"F_out", 11}, {"F_in",  7},
+  {"B_out",  5}, {"B_mid", 4}, {"B_in",  3},
+  {"L_out",  2}, {"L_mid", 1}, {"L_in",  0},
+  {"R_out", 15}, {"R_mid", 14}, {"R_in", 13},
+};
+const int M2_N = sizeof(M2_MAP) / sizeof(M2_MAP[0]);
+
+// L = line seen (bit = 0), . = no line
+char mark(int i) { return (lineState >> i) & 1 ? '.' : 'L'; }
+
+// Debug print: mux 1 by angle, mux 2 by name. raw, threshold, line
+void printDebug() {
+  Serial.printf("flag %d  state %08lX\n", lineState != 0xFFFFFFFF, lineState);
+
+  Serial.print("M1 deg :");
+  for (int ch = 0; ch < 16; ch++) Serial.printf("%6d", (int)(ch * 22.5f));
+  Serial.print("\nM1 raw :");
+  for (int ch = 0; ch < 16; ch++) Serial.printf("%6d", lsRaw[ch]);
+  Serial.print("\nM1 thr :");
+  for (int ch = 0; ch < 16; ch++) Serial.printf("%6d", avg_ls[ch]);
+  Serial.print("\nM1 line:");
+  for (int ch = 0; ch < 16; ch++) Serial.printf("%6c", mark(ch));
+
+  Serial.print("\nM2     :");
+  for (int i = 0; i < M2_N; i++) Serial.printf("%6s", M2_MAP[i].name);
+  Serial.print("\nM2 ch  :");
+  for (int i = 0; i < M2_N; i++) Serial.printf("%6d", M2_MAP[i].ch);
+  Serial.print("\nM2 raw :");
+  for (int i = 0; i < M2_N; i++) Serial.printf("%6d", lsRaw[M2_MAP[i].ch + 16]);
+  Serial.print("\nM2 thr :");
+  for (int i = 0; i < M2_N; i++) Serial.printf("%6d", avg_ls[M2_MAP[i].ch + 16]);
+  Serial.print("\nM2 line:");
+  for (int i = 0; i < M2_N; i++) Serial.printf("%6c", mark(M2_MAP[i].ch + 16));
+  Serial.print("\n\n");
 }
 
 void setup() {
   core_sense_init();
   analogWriteFrequency(LS_BRIGHTNESS, 20000);
-  analogWrite(LS_BRIGHTNESS, 255); // line sensor LED brightness (0-255)
+  analogWrite(LS_BRIGHTNESS, 105); // same as line_sensing.cpp calibration (0-255)
 }
 
 void loop() {
   fast_update_line_sensor();
-  lineState |= M2_UNUSED; // never report a line on unused channels
+  lineState |= M2_UNUSED | M2_IGNORE; // never report a line on these channels
 
   if (!calibrate_line_sensor()) { // button pin 36 calibrates mux 1
     send_line_state();
@@ -35,9 +66,7 @@ void loop() {
     static uint32_t lastPrint = 0;
     if (DEBUG && millis() - lastPrint >= 100) {
       lastPrint = millis();
-      Serial.printf("flag %d  state %08lX\n", lineState != 0xFFFFFFFF, lineState);
-      printMux("M1:", 0);
-      printMux("M2:", 16);
+      printDebug();
     }
   }
 }
