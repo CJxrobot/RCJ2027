@@ -112,6 +112,7 @@ void loop() {
 
 void loop(){
   update_gyro_sensor(); // Vector_Motion holds heading with the gyro
-  Vector_Motion(0, 30, 0); // no line: move forward (90 deg)
+  //Vector_Motion(0, 30, 0); // no line: move forward (90 deg)
+  Serial.printf("Ball Possession: %d\n", digitalRead(BALL_POSESSION));
 }
 
