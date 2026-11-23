@@ -325,6 +325,18 @@ bool kicker_resting();   // true during the KICK_REST_MS rest after a burst
 #define CAPTURE_KP         0.75f
 #define CAPTURE_KD         0.15f
 #define CAPTURE_MAX_LATERAL 50.0f
+// Which distance the chase uses for a camera / FUSED ball:
+//   1 = IR strength (sensors seeing the ball, 1-20, bigger = closer), thresholds below
+//   0 = camera pixel radius (reference code, CHASE_DIST_* / ORBIT_FULL_DIST / PUSH_DIST above)
+// With 1, a camera-only ball (no IR) still uses the camera pixels.
+#define CHASE_USE_IR_DIST  1
+// IR-strength thresholds (bigger = closer). First guesses: tune on the field with test_chase.
+#define IR_CHASE_STR_NEAR  10.0f // strength at CHASE_SPEED_MIN (near, slow)
+#define IR_CHASE_STR_FAR   4.0f  // strength at CHASE_SPEED_MAX (far, fast)
+#define IR_ORBIT_STR       3.0f  // stronger than this: slow down off-front and circle
+#define IR_ORBIT_FULL_STR  5.0f  // at least this: full circling offset
+#define IR_ORBIT_DECAY     0.5f  // weaker: offset x exp(-decay x (full - strength))
+#define IR_PUSH_STR        10.0f // at least this and within 90 +- PUSH_DEG: push forward
 // IR only (no camera ball): drive straight at the ball
 #define IR_SPEED_MIN       50.0f // speed at closeness 0
 #define IR_SPEED_MAX       70.0f // speed at closeness 1

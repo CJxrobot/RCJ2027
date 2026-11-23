@@ -715,10 +715,6 @@ static void capture_update(float angle, uint32_t cam_t) {
   else if (cap.capture && fabsf(cap.predErr) > CAPTURE_EXIT_DEG) cap.capture = false;
 }
 
-static float mapf(float x, float in0, float in1, float out0, float out1) {
-  return out0 + (x - in0) * (out1 - out0) / (in1 - in0);
-}
-
 Vec2 chase_ball(const MergedBall& ball, const FieldData& field) {
   bool camBall = ball.src == SRC_CAM || ball.src == SRC_FUSED;   // camera angle + pixel distance
   if (!camBall) capture_reset();
@@ -738,12 +734,22 @@ Vec2 chase_ball(const MergedBall& ball, const FieldData& field) {
     return polar(IR_SPEED_MIN + (IR_SPEED_MAX - IR_SPEED_MIN) * ball.closeness, ball.angle);
   }
 
-  // Camera ball
+  // Camera / FUSED ball. Distance from IR strength (CHASE_USE_IR_DIST 1, if IR sees the ball)
+  // or from the camera pixel radius (reference code).
   float a = fmodf(ball.angle + 360.0f, 360.0f);
-  float d = ball.dist;
   float off = fabsf(a - 90.0f);                       // same as the reference: 0..270
+  bool useIr = CHASE_USE_IR_DIST && ball.strength > 0;
+  float d = ball.dist;                                // camera pixels, smaller = closer
+  float st = ball.strength;                           // IR strength, bigger = closer
 
-  if (d <= PUSH_DIST && off <= PUSH_DEG) {             // right in front: push
+  bool pushNear  = useIr ? st >= IR_PUSH_STR : d <= PUSH_DIST;
+  bool orbitNear = useIr ? st > IR_ORBIT_STR : d < CHASE_ORBIT_DIST;
+  float speedT   = useIr ? (IR_CHASE_STR_NEAR - st) / (IR_CHASE_STR_NEAR - IR_CHASE_STR_FAR)
+                         : (d - CHASE_DIST_NEAR) / (CHASE_DIST_FAR - CHASE_DIST_NEAR);  // 0 near, 1 far
+  float ratio    = useIr ? (st >= IR_ORBIT_FULL_STR ? 1.0f : expf(-IR_ORBIT_DECAY * (IR_ORBIT_FULL_STR - st)))
+                         : (d <= ORBIT_FULL_DIST ? 1.0f : expf(-ORBIT_DECAY * (d - ORBIT_FULL_DIST)));
+
+  if (pushNear && off <= PUSH_DEG) {                   // right in front: push
     lastChase = CHASE_PUSH;
     Vec2 v;
     v.y = PUSH_SPEED;
@@ -762,16 +768,14 @@ Vec2 chase_ball(const MergedBall& ball, const FieldData& field) {
   }
 
   lastChase = CHASE_ORBIT;
-  float speed = constrain(mapf(d, CHASE_DIST_NEAR, CHASE_DIST_FAR, CHASE_SPEED_MIN, CHASE_SPEED_MAX),
-                          CHASE_SPEED_MIN, CHASE_SPEED_MAX);
+  float speed = CHASE_SPEED_MIN + (CHASE_SPEED_MAX - CHASE_SPEED_MIN) * clamp01(speedT);
   float dir = a;
-  if (d < CHASE_ORBIT_DIST) {
+  if (orbitNear) {
     speed *= 0.6f + 0.4f * (1.0f - clamp01(off / 90.0f));
     if (off <= CHASE_FRONT_DEG) {
       speed = CHASE_FRONT_SPEED;
     } else {
       float side = (a > 90.0f + CHASE_FRONT_DEG && a < 270.0f) ? 1.0f : -1.0f;
-      float ratio = (d <= ORBIT_FULL_DIST) ? 1.0f : expf(-ORBIT_DECAY * (d - ORBIT_FULL_DIST));
       dir = a + side * ORBIT_OFFSET_DEG * ratio;
     }
   }
