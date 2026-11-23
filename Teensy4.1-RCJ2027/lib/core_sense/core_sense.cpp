@@ -14,7 +14,7 @@ uint32_t lineState = 0xFFFFFFFF;
 
 void core_sense_init() {
     Serial.begin(115200);
-    Serial8.begin(921600); // to act core
+    Serial8.begin(SENSE_BAUD); // to act core, 921600, same constant on both boards
     pinMode(PIN_0, OUTPUT);
     pinMode(PIN_1, OUTPUT);
     digitalWrite(PIN_0, LOW);

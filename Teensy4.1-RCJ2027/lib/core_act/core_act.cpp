@@ -14,7 +14,7 @@ void core_act_init() {
     Serial2.begin(115200);
     Serial3.begin(115200);
     Serial3.setTimeout(50); // ms, camera answers once per frame
-    Serial8.begin(921600);
+    Serial8.begin(SENSE_BAUD);            // 921600, same constant on both boards
     pinMode(LED_BUILTIN, OUTPUT);
 
     // Motor Initialization
