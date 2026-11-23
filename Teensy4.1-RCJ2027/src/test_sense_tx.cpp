@@ -4,10 +4,13 @@
 // T01 (Sense): ONE packet with line + IR ball (AA, 11 bytes) on Serial8 at 921600.
 //   no line:   ~SENSE_TX_HZ (100) packets/s
 //   line seen: a packet every loop, each still carrying the ball
-// Ball data is a FAKE sweep until new_ir_sensing (R02).
+// USE_FAKE_BALL 1: fake ball sweep (+3 deg every 10 ms), 0: real IR from compute_ir_ball().
+// The printout also shows the ball that went out, so you can check the IR angle.
 //
 // Pass: off the line -> ~100 pkts/s, with line 0/s
 //       on the line  -> pkts/s = loops/s, with line = pkts/s, tx full 0
+
+#define USE_FAKE_BALL 0
 
 static IrBall fakeBall() {
   static uint16_t angle = 0;
@@ -23,7 +26,7 @@ static IrBall fakeBall() {
 void setup() {
   core_sense_init();
   analogWrite(LS_BRIGHTNESS, 155);
-  Serial.println("T01 test_sense_tx: line + fake IR ball in one packet");
+  Serial.printf("T01 test_sense_tx: line + %s IR ball in one packet\n", USE_FAKE_BALL ? "FAKE" : "REAL");
 }
 
 void loop() {
@@ -31,16 +34,18 @@ void loop() {
   static SenseTxStats prev;
 
   fast_update_line_sensor();
-  send_sense_packet(lineState, fakeBall());
+  IrBall ball = USE_FAKE_BALL ? fakeBall() : compute_ir_ball();
+  send_sense_packet(lineState, ball);
   digitalWriteFast(LED_BUILTIN, lineState != 0xFFFFFFFF);
   loops++;
 
   if (millis() - lastPrint >= 1000) {
     lastPrint = millis();
     SenseTxStats s = senseTxStats;
-    Serial.printf("loops/s %5lu | pkts/s %5lu | with line %5lu | tx full %lu\n",
+    Serial.printf("loops/s %5lu | pkts/s %5lu | with line %5lu | tx full %lu | ball %s %3u deg str %u | line %08lX\n",
                   loops, s.pkts - prev.pkts, s.line_pkts - prev.line_pkts,
-                  s.skipped_full - prev.skipped_full);
+                  s.skipped_full - prev.skipped_full,
+                  ball.found ? "seen" : "none", ball.angle, ball.strength, lineState);
     prev = s;
     loops = 0;
   }
