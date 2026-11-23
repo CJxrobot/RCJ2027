@@ -20,7 +20,7 @@ import time as systime   # standard time (maix.time shadows the name "time")
 #   [17] 0xEE          tail
 #
 # Angles: robot frame, 0 = right, 90 = front, 180 = left, 270 = back (counter-clockwise).
-# Same angle maths as before (act_defense uses goal 270 = straight behind).
+# With the picture the right way up: screen top = front, screen right = right.
 PKT_LEN = 18
 NOT_FOUND = 0xFFFF
 
@@ -70,8 +70,11 @@ BACK_LAB = BLUE_LAB if ATTACK_YELLOW else YELLOW_LAB
 # Orange ball (tune in the MaixVision threshold tool)
 # keep A-min above the yellow goal's A-max (28) so the goal isn't read as the ball
 ORANGE_LAB = [44, 75, 6, 47, 10, 53]
+# Image centre (robot centre) AFTER the flips below.
+# Only the X flip is applied now, so CENTER_Y is the old value mirrored: 239 - 125 = 114.
+# If the centre cross is not on the robot centre, re-measure both in the debug view.
 CENTER_X = 175
-CENTER_Y = 125
+CENTER_Y = 114
 R_MIN = 37
 R_MAX = 100
 
@@ -111,7 +114,9 @@ def point_radius(x, y):
 
 
 def point_angle_deg(x, y):
-    return int(round(math.degrees(math.atan2(y - CENTER_Y, x - CENTER_X)) % 360)) % 360
+    # Robot frame: screen top = front (90), screen right = right (0), counter-clockwise.
+    # Image y grows downward, so use (CENTER_Y - y) to make "up" positive.
+    return int(round(math.degrees(math.atan2(CENTER_Y - y, x - CENTER_X)) % 360)) % 360
 
 
 def angle_diff(a, b):
@@ -298,7 +303,7 @@ try:
             continue
 
         img = img.flip(image.FlipDir.X)
-        img = img.flip(image.FlipDir.Y)
+        # no Y flip: the picture was upside down (vertically mirrored) with it
         frame_count += 1
 
         # ---- ball ----
