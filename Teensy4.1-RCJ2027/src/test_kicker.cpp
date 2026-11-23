@@ -2,8 +2,8 @@
 #include <core_act.h>
 
 // T05 (Act): kicker without delay(), debounced possession, motor 3 unaffected by charging.
-// After START: motor 3 runs at 30 %. Push a ball into the catcher: it kicks when ready.
-// Press START again to stop / start motor 3.
+// After START the motors stay OFF. Push a ball into the catcher: it kicks when ready.
+// Optional: each START press turns motor 3 on / off (30 %) to check charging does not affect it.
 // Pass: worst loop < 1000 us during kicks, kicks only when ready, motor 3 steady while charging,
 //       2 kicks (500 ms apart) then a 2 s rest (REST shown) before the next kick
 
@@ -15,7 +15,7 @@ void setup() {
 
 void loop() {
   static LoopMeter lm;
-  static bool motorOn = true;
+  static bool motorOn = false;   // motors stay off; START turns motor 3 on only if you want to check it
   static uint32_t refused = 0;
   lm.begin();
 
