@@ -96,6 +96,15 @@ void send_line_state() {
     Serial8.write(pkt, 6);
 }
 
+// IR ball packet: BB found angleL angleH dist checksum (sum of bytes 1-4)
+void send_ball_ir(bool found, uint16_t angle, uint16_t dist) {
+    if (!found) angle = 0xFFFF;
+    uint8_t pkt[6] = {0xBB, (uint8_t)found, (uint8_t)angle, (uint8_t)(angle >> 8),
+                      (uint8_t)min(dist, (uint16_t)255), 0};
+    for (int i = 1; i <= 4; i++) pkt[5] += pkt[i];
+    Serial8.write(pkt, 6);
+}
+
 // Call every loop after fast_update_line_sensor().
 // 1st press: LED13 blinks, record min/max of each sensor
 // 2nd press: LED13 off, save avg_ls to EEPROM, show result for 2 s

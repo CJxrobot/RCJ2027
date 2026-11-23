@@ -39,14 +39,22 @@ struct RobotState {
     float robot_heading = 90.0f;     // target heading used by Vector_Motion
     float heading_threshold = 2.0f;  // deg, no correction inside this band
     float P_factor = 0.5f;           // omega per degree of heading error
+
+    // Ball from the IR ring on the sense core (Serial8 packet BB), angle = 0xFFFF when not found
+    bool ir_found = false;
+    uint16_t ir_angle = 0xFFFF;      // deg 0-359, 0 = right, 90 = front
+    uint16_t ir_dist = 0;            // sensors seeing the ball: 1 = farthest, more = closer
 };
 
-// Top camera (MaixCam, Serial3); angle/dist = 0xFFFF when goal not found
+// Top camera (MaixCam, Serial3); angle/dist = 0xFFFF when not found
 struct TopMaixData {
     bool valid = false;
     bool goal_found = false;
     uint16_t goal_angle = 0xFFFF; // deg 0-359
     uint16_t goal_dist = 0xFFFF;
+    bool ball_found = false;      // v2 packet
+    uint16_t ball_angle = 0xFFFF; // deg 0-359
+    uint16_t ball_dist = 0xFFFF;  // cm
 };
 
 extern GyroData gyroData;
@@ -64,9 +72,16 @@ void readTopMaix_polar();  // old protocol: send 0xDD, wait for reply (blocking)
 void camera_dma_begin();
 bool read_camera();        // non-blocking, true when topmaixData got a new packet
 
-// --- Line (from sense core, Serial8) ---
+// --- Top camera v2: ball + goal, camera sends every frame, Serial3 read directly (no DMA) ---
+// Packet: CC DD flags bAngL bAngH bDistL bDistH gAngL gAngH gDistL gDistH checksum EE
+// Do not use together with camera_dma_begin()
+bool topmaix_parse(uint8_t c);   // one byte in, true when a valid packet filled topmaixData
+bool read_topmaix_ball_goal();   // non-blocking, reads all Serial3 bytes, true if a new packet arrived
+
+// --- Line + IR ball (from sense core, Serial8) ---
 bool line_flag();                       // true if PIN_0 or PIN_1 is HIGH
-bool read_line_state(uint32_t& state);  // true if a valid packet arrived, keeps the newest
+bool read_line_state(uint32_t& state);  // true if a line packet arrived (keeps the newest)
+                                        // also fills robot.ir_* from IR packets
 float line_angle(uint32_t state, float fallback = -1); // deg 0-360 of the line, -1 if none
 
 // --- Motors ---

@@ -35,4 +35,7 @@ void update_ball_sensor();
 void fast_update_line_sensor();
 bool calibrate_line_sensor(); // true while scanning
 void send_line_state();       // set PIN_0/PIN_1, send lineState to act core (Serial8)
+// IR ball to act core (Serial8): BB found angleL angleH dist checksum (sum of bytes 1-4)
+// angle 0xFFFF when not found, dist = sensors seeing the ball (1 = farthest, more = closer)
+void send_ball_ir(bool found, uint16_t angle, uint16_t dist);
 #endif

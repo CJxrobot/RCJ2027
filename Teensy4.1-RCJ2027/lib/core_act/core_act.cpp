@@ -14,6 +14,8 @@ void core_act_init() {
     Serial2.begin(115200);
     Serial3.begin(115200);
     Serial3.setTimeout(50); // ms, camera answers once per frame
+    static uint8_t cam_rx_extra[256];                       // default 64 bytes overflow during
+    Serial3.addMemoryForRead(cam_rx_extra, sizeof(cam_rx_extra)); // a slow OLED redraw
     Serial8.begin(921600);
     pinMode(LED_BUILTIN, OUTPUT);
 
@@ -160,21 +162,73 @@ bool read_camera() {
   return got;
 }
 
+// ===== Top camera v2: ball + goal (Serial3, read directly) =====
+// CC DD flags bAngL bAngH bDistL bDistH gAngL gAngH gDistL gDistH checksum EE
+// checksum = (DD + bytes 2-10) & 0xFF, flags bit0 = ball found, bit1 = goal found
+bool topmaix_parse(uint8_t c) {
+  static uint8_t buf[13];
+  static uint8_t idx = 0;
+
+  if (idx == 0 && c != 0xCC) return false;
+  if (idx == 1 && c != 0xDD) { idx = (c == 0xCC) ? 1 : 0; return false; }
+
+  buf[idx++] = c;
+  if (idx < 13) return false;
+  idx = 0;
+
+  if (buf[12] != 0xEE) return false;
+  uint8_t sum = 0xDD;
+  for (uint8_t i = 2; i <= 10; i++) sum += buf[i];
+  if (sum != buf[11]) return false;
+
+  uint8_t flags = buf[2];
+  topmaixData.valid      = true;
+  topmaixData.ball_found = flags & 0x01;
+  topmaixData.goal_found = flags & 0x02;
+  topmaixData.ball_angle = buf[3] | (buf[4] << 8);
+  topmaixData.ball_dist  = buf[5] | (buf[6] << 8);
+  topmaixData.goal_angle = buf[7] | (buf[8] << 8);
+  topmaixData.goal_dist  = buf[9] | (buf[10] << 8);
+  return true;
+}
+
+bool read_topmaix_ball_goal() {
+  bool got = false;
+  while (Serial3.available()) {
+    if (topmaix_parse(Serial3.read())) got = true;
+  }
+  return got;
+}
+
 // ===== Line (from sense core) =====
 bool line_flag() {
   return digitalReadFast(PIN_0) || digitalReadFast(PIN_1);
 }
 
-// Packet: AA s0 s1 s2 s3 checksum (sum of s0-s3)
+// Two packets share Serial8, both 6 bytes, checksum = sum of bytes 1-4:
+//   AA s0 s1 s2 s3 checksum          line state
+//   BB found angleL angleH dist checksum    IR ball -> robot.ir_*
 bool read_line_state(uint32_t& state) {
+  static uint8_t b[6];
+  static int n = 0;
   bool got = false;
-  while (Serial8.available() >= 6) {
-    if (Serial8.peek() != 0xAA) { Serial8.read(); continue; } // resync
-    uint8_t b[6];
-    Serial8.readBytes(b, 6);
+
+  while (Serial8.available()) {
+    uint8_t c = Serial8.read();
+    if (n == 0 && c != 0xAA && c != 0xBB) continue; // wait for a header
+    b[n++] = c;
+    if (n < 6) continue;
+    n = 0;
     if ((uint8_t)(b[1] + b[2] + b[3] + b[4]) != b[5]) continue;
-    state = b[1] | (b[2] << 8) | (b[3] << 16) | ((uint32_t)b[4] << 24);
-    got = true;
+
+    if (b[0] == 0xAA) {
+      state = b[1] | (b[2] << 8) | (b[3] << 16) | ((uint32_t)b[4] << 24);
+      got = true;
+    } else {
+      robot.ir_found = b[1];
+      robot.ir_angle = b[2] | (b[3] << 8);
+      robot.ir_dist  = b[4];
+    }
   }
   return got;
 }
