@@ -416,6 +416,10 @@ LineCtl back_to_field(bool got_line_packet);
 // Only IR -> IR,  only camera -> CAM,  none -> NONE
 MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir);
 
+// IR only, no camera (the defense robot uses this for now; merge_ball_data() kept for later)
+//   IR sees the ball -> SRC_IR with IR angle and IR strength / closeness, else SRC_NONE
+MergedBall ir_only_ball(const IrBallData& ir);
+
 // Chase (reference code, tested):
 //   camera ball: capture mode (predicted error < CAPTURE_ENTER_DEG, leaves at > CAPTURE_EXIT_DEG)
 //                else orbit: speed by distance, straight when in front, circle when close;

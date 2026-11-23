@@ -2,6 +2,7 @@
 #include <core_act.h>
 
 // T12 (Act): defense robot as a state machine
+// Ball: IR only for now (ir_only_ball). For camera + IR use merge_ball_data(fieldData, irBall).
 //
 //   DEFEND  stay on the penalty line (same line logic as act_defense)
 //           ball seen:    move sideways to keep the ball straight ahead
@@ -148,7 +149,7 @@ void setup() {
     kicker_update();
     if (millis() - lastDraw >= 100) {
       lastDraw = millis();
-      MergedBall b = merge_ball_data(fieldData, irBall);
+      MergedBall b = ir_only_ball(irBall);
       display.clearDisplay();
       display.setTextSize(1);
       display.setCursor(0, 0);
@@ -180,7 +181,7 @@ void loop() {
 
   uint32_t now = millis();
   uint32_t state = line_flag() ? lineData.state : 0xFFFFFFFF;
-  MergedBall ball = merge_ball_data(fieldData, irBall);
+  MergedBall ball = ir_only_ball(irBall);
   if (ball.src != SRC_NONE || has_ball()) lastBallSeen = now;
 
   Vec2 v;

@@ -683,6 +683,16 @@ MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir) {
   return m;
 }
 
+MergedBall ir_only_ball(const IrBallData& ir) {
+  MergedBall m;
+  if (!ir_ball_fresh(IR_TIMEOUT_MS)) return m;
+  m.src = SRC_IR;
+  m.angle = ir.angle;
+  m.strength = ir.strength;
+  m.closeness = clamp01((ir.strength - IR_FAR_STR) / (IR_NEAR_STR - IR_FAR_STR));
+  return m;
+}
+
 // Capture-mode state: filtered ball angle rate and hysteresis
 static struct {
   bool init = false;
