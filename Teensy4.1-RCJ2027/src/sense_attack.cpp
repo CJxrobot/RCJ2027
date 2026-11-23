@@ -9,7 +9,8 @@
 
 void setup() {
   core_sense_init();
-  analogWrite(LS_BRIGHTNESS, 155);
+  analogWriteFrequency(LS_BRIGHTNESS, 20000);
+  analogWrite(LS_BRIGHTNESS, 105);   // same as sense_ir.cpp / line_sensing.cpp calibration
 }
 
 void loop() {

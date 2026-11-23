@@ -9,7 +9,8 @@ static bool oldMode = true;
 
 void setup() {
   core_sense_init();
-  analogWrite(LS_BRIGHTNESS, 155);
+  analogWriteFrequency(LS_BRIGHTNESS, 20000);
+  analogWrite(LS_BRIGHTNESS, 105);   // same as sense_ir.cpp / line_sensing.cpp calibration
   Serial.println("T03 test_line_scan_rate: press pin 36 to switch OLD / NEW");
 }
 
@@ -28,7 +29,7 @@ void loop() {
   uint32_t t0 = micros();
   fast_update_line_sensor();          // NEW: IR is sampled inside, via ir_sample()
   if (oldMode) update_ball_sensor();  // OLD: extra 1 ms busy wait per loop
-  send_line_state();
+  send_sense_packet(lineState, IrBall());   // no IR here: only the scan is timed
   uint32_t dt = micros() - t0;
   if (dt > worstUs) worstUs = dt;
   scans++;

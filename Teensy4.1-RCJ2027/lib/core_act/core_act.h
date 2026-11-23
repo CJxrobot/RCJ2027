@@ -327,8 +327,8 @@ bool kicker_resting();   // true during the KICK_REST_MS rest after a burst
 // IR only (no camera ball): drive straight at the ball
 #define IR_SPEED_MIN       50.0f // speed at closeness 0
 #define IR_SPEED_MAX       70.0f // speed at closeness 1
-#define IR_NEAR_STR        600.0f // IR strength where closeness = 1 (set after R02)
-#define IR_FAR_STR         100.0f // IR strength where closeness = 0 (set after R02)
+#define IR_NEAR_STR        8.0f  // IR strength (= sensors seeing the ball, 1-20) where closeness = 1
+#define IR_FAR_STR         1.0f  // IR strength where closeness = 0
 // No ball
 #define HOME_SPEED         30.0f // drive toward our own goal at this speed
 #define HOME_DIST_CM       60.0f // ... until the back goal is this close

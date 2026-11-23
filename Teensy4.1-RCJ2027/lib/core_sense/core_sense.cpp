@@ -1,10 +1,10 @@
 #include <core_sense.h>
 #include <EEPROM.h>
 
+// out 1-20 -> pin (sense_ir.cpp)
 const uint8_t IR_PINS[IR_COUNT] = {
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, // port 1  - 11
-    23, 22, 21,                          // port 12 - 14
-    28, 29                               // port 15 - 16
+    12, 11, 10,  9,  8,  7,  6,  5,  4,  3, // out 1-10
+     2, 23, 22, 21, 30, 29, 39, 38, 32, 33  // out 11-20
 };
 uint16_t irValue[IR_COUNT];
 
@@ -42,12 +42,12 @@ void core_sense_init() {
     }
 }
 
-// Count LOW samples on each sensor over 1 ms (one ball pulse cycle is ~833 us)
+// Count LOW samples on each sensor over IR_WINDOW_US (one ball pulse cycle is ~833 us)
 void update_ball_sensor() {
     for (int i = 0; i < IR_COUNT; i++) irValue[i] = 0;
 
     uint32_t start = micros();
-    while (micros() - start < 1000) {
+    while (micros() - start < IR_WINDOW_US) {
         for (int i = 0; i < IR_COUNT; i++) {
             if (digitalRead(IR_PINS[i]) == LOW) irValue[i]++;
         }
@@ -152,9 +152,75 @@ bool calibrate_line_sensor() {
 // =====================================================================
 SenseTxStats senseTxStats;
 
-// Placeholders until new_ir_sensing is added (R02)
-__attribute__((weak)) void ir_sample() {}
-__attribute__((weak)) IrBall compute_ir_ball() { return IrBall(); }
+// ----- IR ball (sense_ir.cpp) -----
+struct IrSensor { uint8_t out; int16_t deg; };
+static const IrSensor IR_NEAR[] = {
+  {2, 0}, {4, 45}, {5, 60}, {6, 85}, {8, 95}, {9, 120}, {10, 135},
+  {12, 180}, {14, 230}, {16, 260}, {18, 280}, {20, 310}
+};
+static const IrSensor IR_FAR[] = {
+  {1, 0}, {3, 45}, {7, 90}, {11, 135}, {13, 180}, {15, 225}, {17, 270}, {19, 315}
+};
+static const int IR_NEAR_N = sizeof(IR_NEAR) / sizeof(IR_NEAR[0]);
+static const int IR_FAR_N  = sizeof(IR_FAR)  / sizeof(IR_FAR[0]);
+
+// Ball angle from one group, -1 if no sensor in the group sees the ball.
+// Vector sum of the strongest sensor + its two neighbours (group sorted by angle), count-weighted
+static float irGroupAngle(const IrSensor* g, int n) {
+  int k = 0;
+  uint16_t best = 0;
+  for (int i = 0; i < n; i++) {
+    uint16_t c = irValue[g[i].out - 1];
+    if (c > best) { best = c; k = i; }
+  }
+  if (best <= IR_MIN) return -1;
+
+  float x = 0, y = 0;
+  for (int d = -1; d <= 1; d++) {
+    const IrSensor& s = g[(k + d + n) % n];
+    float c = irValue[s.out - 1];
+    x += c * cosf(s.deg * DEG_TO_RAD);
+    y += c * sinf(s.deg * DEG_TO_RAD);
+  }
+  float a = atan2f(y, x) * RAD_TO_DEG;
+  return a < 0 ? a + 360.0f : a;
+}
+
+static IrBall irFromCounts() {
+  IrBall b;
+  float angle = irGroupAngle(IR_NEAR, IR_NEAR_N);          // near first
+  if (angle < 0) angle = irGroupAngle(IR_FAR, IR_FAR_N);   // else far
+  if (angle < 0) return b;
+  b.found = true;
+  b.angle = (uint16_t)lroundf(angle) % 360;
+  for (int i = 0; i < IR_COUNT; i++) if (irValue[i] > IR_MIN) b.strength++;
+  return b;
+}
+
+#if IR_NONBLOCKING
+static uint16_t irAcc[IR_COUNT];
+static uint32_t irWinStart = 0;
+#endif
+
+void ir_sample() {
+#if IR_NONBLOCKING
+  for (int i = 0; i < IR_COUNT; i++) if (digitalReadFast(IR_PINS[i]) == LOW) irAcc[i]++;
+#endif
+}
+
+IrBall compute_ir_ball() {
+#if IR_NONBLOCKING
+  static IrBall last;
+  if (micros() - irWinStart < IR_WINDOW_US) return last;   // window still open
+  for (int i = 0; i < IR_COUNT; i++) { irValue[i] = irAcc[i]; irAcc[i] = 0; }
+  irWinStart = micros();
+  last = irFromCounts();
+  return last;
+#else
+  update_ball_sensor();                                    // 1 ms, same as sense_ir.cpp
+  return irFromCounts();
+#endif
+}
 
 bool send_sense_packet(uint32_t state, const IrBall& ball) {
   static uint32_t last = 0;
