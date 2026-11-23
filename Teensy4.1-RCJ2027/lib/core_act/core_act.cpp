@@ -26,7 +26,7 @@ void core_act_init() {
     pinMode(SLP, OUTPUT);
     digitalWrite(SLP, HIGH);   // wake motor drivers
 
-    pinMode(BALL_POSESSION, INPUT);        // sensor has its own RC filter, read it as is
+    pinMode(BALL_POSESSION, INPUT_PULLUP); // same as act_kicker_ball.cpp (tested): HIGH = no ball
     pinMode(START_BUTTON, INPUT_PULLUP);
 
     // Line flag: stop motors the moment either pin goes HIGH, before UART data arrives
@@ -516,7 +516,7 @@ void kicker_begin() {
   digitalWriteFast(KICK_DISCHARGE_PIN, LOW); // discharge off before anything else
   chargeDuty = -1;
   chargeWrite(0);
-  pinMode(KICK_BALL_PIN, INPUT);             // sensor has its own RC filter, read it as is
+  pinMode(KICK_BALL_PIN, INPUT_PULLUP);      // same as act_kicker_ball.cpp (tested): HIGH = no ball
   shotsLeft = KICK_BURST;
   resting = false;
   rampMs = RAMP_MS;
