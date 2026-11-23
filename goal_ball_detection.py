@@ -70,11 +70,12 @@ BACK_LAB = BLUE_LAB if ATTACK_YELLOW else YELLOW_LAB
 # Orange ball (tune in the MaixVision threshold tool)
 # keep A-min above the yellow goal's A-max (28) so the goal isn't read as the ball
 ORANGE_LAB = [44, 75, 6, 47, 10, 53]
-# Image centre (robot centre) AFTER the flips below.
-# Only the X flip is applied now, so CENTER_Y is the old value mirrored: 239 - 125 = 114.
+# Image centre (robot centre) AFTER the flip below.
+# Only the Y (up-down) flip is applied now. The old values (175, 125) were measured with
+# both flips, so X is mirrored: 319 - 175 = 144, Y stays 125.
 # If the centre cross is not on the robot centre, re-measure both in the debug view.
-CENTER_X = 175
-CENTER_Y = 114
+CENTER_X = 144
+CENTER_Y = 125
 R_MIN = 37
 R_MAX = 100
 
@@ -302,8 +303,7 @@ try:
         if img is None:
             continue
 
-        img = img.flip(image.FlipDir.X)
-        # no Y flip: the picture was upside down (vertically mirrored) with it
+        img = img.flip(image.FlipDir.Y)   # up-down flip only (no left-right flip)
         frame_count += 1
 
         # ---- ball ----
