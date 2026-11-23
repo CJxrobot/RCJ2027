@@ -83,11 +83,11 @@ void fast_update_line_sensor() {
 }
 
 // Call every loop after fast_update_line_sensor().
-// Line seen: PIN_0/PIN_1 HIGH, then send packet AA s0 s1 s2 s3 checksum (sum of s0-s3)
-// No line:   PIN_0/PIN_1 LOW, nothing sent
-// Returns true if a line packet was sent
+// Line seen: PIN_0/PIN_1 HIGH, line + ball packet every call
+// No line:   PIN_0/PIN_1 LOW, line + ball packet at SENSE_TX_HZ
+// Returns true if a packet was sent
 bool send_line_state() {
-    return send_line_packet(lineState);
+    return send_sense_packet(lineState, compute_ir_ball());
 }
 
 // Call every loop after fast_update_line_sensor().
@@ -156,34 +156,26 @@ SenseTxStats senseTxStats;
 __attribute__((weak)) void ir_sample() {}
 __attribute__((weak)) IrBall compute_ir_ball() { return IrBall(); }
 
-bool send_line_packet(uint32_t state) {
+bool send_sense_packet(uint32_t state, const IrBall& ball) {
+  static uint32_t last = 0;
   bool line = state != 0xFFFFFFFF;
   digitalWriteFast(PIN_0, line);
   digitalWriteFast(PIN_1, line);
-  if (!line) return false;
 
-  uint8_t p[LINE_LEN] = {LINE_HDR,
-                         (uint8_t)(state), (uint8_t)(state >> 8),
-                         (uint8_t)(state >> 16), (uint8_t)(state >> 24), 0};
-  p[5] = pkt_sum(p, 1, 4);
-  Serial8.write(p, LINE_LEN);
-  senseTxStats.line_pkts++;
-  return true;
-}
-
-bool send_ball_packet(const IrBall& ball) {
-  static uint32_t last = 0;
   uint32_t now = micros();
-  if (now - last < 1000000UL / BALL_TX_HZ) return false; // not due yet
+  if (!line && now - last < 1000000UL / SENSE_TX_HZ) return false;   // no line: 100 Hz
+  if (Serial8.availableForWrite() < SENSE_LEN) { senseTxStats.skipped_full++; return false; }
 
-  if (Serial8.availableForWrite() < BALL_LEN) { senseTxStats.ball_skipped_full++; return false; }
-
-  uint8_t p[BALL_LEN] = {BALL_HDR, (uint8_t)ball.found, 0, 0, 0, 0, 0};
-  pkt_put16(p, 2, ball.found ? ball.angle % 360 : PKT_NONE);
-  pkt_put16(p, 4, ball.found ? ball.strength : 0);
-  p[6] = pkt_sum(p, 1, 5);
-  Serial8.write(p, BALL_LEN);
-  senseTxStats.ball_pkts++;
+  uint8_t p[SENSE_LEN] = {SENSE_HDR,
+                          (uint8_t)(state), (uint8_t)(state >> 8),
+                          (uint8_t)(state >> 16), (uint8_t)(state >> 24),
+                          (uint8_t)ball.found, 0, 0, 0, 0, 0};
+  pkt_put16(p, 6, ball.found ? ball.angle % 360 : PKT_NONE);
+  pkt_put16(p, 8, ball.found ? ball.strength : 0);
+  p[10] = pkt_sum(p, 1, 9);
+  Serial8.write(p, SENSE_LEN);
+  senseTxStats.pkts++;
+  if (line) senseTxStats.line_pkts++;
   last = now;
   return true;
 }

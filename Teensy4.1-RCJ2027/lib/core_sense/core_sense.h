@@ -39,7 +39,7 @@ void core_sense_init();
 void update_ball_sensor();
 void fast_update_line_sensor();
 bool calibrate_line_sensor(); // true while scanning
-bool send_line_state();       // set PIN_0/PIN_1, send lineState to act core (Serial8), true if sent
+bool send_line_state();       // set PIN_0/PIN_1, send line + ball packet to act core (Serial8), true if sent
 
 // =====================================================================
 // Packet formats (keep the same as core_act.h and the Packets tab)
@@ -64,15 +64,16 @@ bool send_line_state();       // set PIN_0/PIN_1, send lineState to act core (Se
 #define CAM_FLAG_FRONT  0x02
 #define CAM_FLAG_BACK   0x04
 
-// ===== Sense -> Act, Serial8, 921600 =====
+// ===== /sense_data: Sense -> Act, Serial8, 921600 =====
+// Line + IR ball in ONE packet (11 bytes), so every packet has both:
+//   AA s0 s1 s2 s3 found angL angH strL strH chk     chk = sum of bytes [1..9]
+//   s0-s3: lineState, bit = 0 when that sensor sees the line (all 1 = no line)
+//   found: 1 = ball seen; angle 0-359 (0xFFFF if not seen); strength: higher = closer
+// Sent every loop while a line is seen, otherwise at SENSE_TX_HZ.
 #define SENSE_BAUD      921600
-// /line_data, high priority: AA s0 s1 s2 s3 chk   (6 bytes), chk = sum of bytes [1..4]
-#define LINE_HDR        0xAA
-#define LINE_LEN        6
-// /ir_ball_data, low priority (sent after the line packet, also while on a line):
-//   BB found angL angH strL strH chk   (7 bytes), chk = sum of bytes [1..5]
-#define BALL_HDR        0xBB
-#define BALL_LEN        7
+#define SENSE_HDR       0xAA
+#define SENSE_LEN       11
+#define SENSE_TX_HZ     100
 
 static inline uint8_t pkt_sum(const uint8_t* b, int from, int to) {
   uint8_t s = 0;
@@ -105,23 +106,18 @@ struct IrBall {
 void ir_sample();
 IrBall compute_ir_ball();
 
-// Line packet (high priority). Sets PIN_0/PIN_1 and sends AA packet while a line is seen.
-// Returns true if a packet was sent this call.
-bool send_line_packet(uint32_t state);
-
-// Ball packet (low priority). Always sent, also while a line is seen (the act core needs
-// the ball position there too). In each loop the line packet goes out first. Sent only if:
-//   - at least 1000/BALL_TX_HZ ms since the last ball packet
-//   - Serial8 has room for the whole packet
-// Returns true if a packet was sent.
-#define BALL_TX_HZ 100
-bool send_ball_packet(const IrBall& ball);
+// Send line + ball in one packet (see /sense_data above). Also sets PIN_0/PIN_1.
+//   line seen: sent every call (fastest reaction)
+//   no line:   sent at SENSE_TX_HZ, so the act core still gets the ball and "line cleared"
+// Skipped only if Serial8 has no room for the whole packet. Returns true if sent.
+// send_line_state() calls this with lineState and compute_ir_ball().
+bool send_sense_packet(uint32_t state, const IrBall& ball);
 
 // Counters for test programs
 struct SenseTxStats {
-  uint32_t line_pkts = 0;
-  uint32_t ball_pkts = 0;
-  uint32_t ball_skipped_full = 0; // ball due but Serial8 TX buffer was full
+  uint32_t pkts = 0;          // all packets
+  uint32_t line_pkts = 0;     // packets with a line in them
+  uint32_t skipped_full = 0;  // due but Serial8 TX buffer was full
 };
 extern SenseTxStats senseTxStats;
 

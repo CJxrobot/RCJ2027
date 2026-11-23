@@ -168,7 +168,7 @@ bool line_flag() {
 // Packet: AA s0 s1 s2 s3 checksum (sum of s0-s3)
 // Uses the shared Serial8 parser, so ball packets (BB) are no longer thrown away
 bool read_line_state(uint32_t& state) {
-  if (!(read_sense() & SENSE_GOT_LINE)) return false;
+  if (!(read_sense() & SENSE_GOT_PKT)) return false;
   state = lineData.state;
   return true;
 }
@@ -319,38 +319,30 @@ IrBallData irBall;
 SenseLinkStats senseLinkStats;
 
 uint8_t read_sense() {
-  static uint8_t buf[8];
-  static uint8_t n = 0, need = 0;
+  static uint8_t buf[SENSE_LEN];
+  static uint8_t n = 0;
   uint8_t got = 0;
 
   while (Serial8.available()) {
     uint8_t b = Serial8.read();
-
-    if (n == 0) {                      // waiting for a header
-      if (b == LINE_HDR)      need = LINE_LEN;
-      else if (b == BALL_HDR) need = BALL_LEN;
-      else { senseLinkStats.junk++; continue; }
-    }
+    if (n == 0 && b != SENSE_HDR) { senseLinkStats.junk++; continue; }
     buf[n++] = b;
-    if (n < need) continue;
+    if (n < SENSE_LEN) continue;
     n = 0;
 
-    if (need == LINE_LEN) {
-      if (pkt_sum(buf, 1, 4) != buf[5]) { senseLinkStats.bad++; continue; }
-      lineData.state = buf[1] | (buf[2] << 8) | (buf[3] << 16) | ((uint32_t)buf[4] << 24);
-      lineData.t_ms = millis();
-      senseLinkStats.line_pkts++;
-      got |= SENSE_GOT_LINE;
-    } else {
-      if (pkt_sum(buf, 1, 5) != buf[6]) { senseLinkStats.bad++; continue; }
-      uint16_t a = pkt_u16(buf, 2);
-      irBall.found = buf[1] && a < 360;
-      if (irBall.found) irBall.angle = a;
-      irBall.strength = pkt_u16(buf, 4);
-      irBall.t_ms = millis();
-      senseLinkStats.ball_pkts++;
-      got |= SENSE_GOT_BALL;
-    }
+    if (pkt_sum(buf, 1, 9) != buf[10]) { senseLinkStats.bad++; continue; }
+    uint32_t now = millis();
+    lineData.state = buf[1] | (buf[2] << 8) | (buf[3] << 16) | ((uint32_t)buf[4] << 24);
+    lineData.t_ms = now;
+    uint16_t a = pkt_u16(buf, 6);
+    irBall.found = buf[5] && a < 360;
+    if (irBall.found) irBall.angle = a;
+    irBall.strength = pkt_u16(buf, 8);
+    irBall.t_ms = now;
+
+    senseLinkStats.pkts++;
+    got |= SENSE_GOT_PKT;
+    if (lineData.state != 0xFFFFFFFF) { senseLinkStats.line_pkts++; got |= SENSE_GOT_LINE; }
   }
   return got;
 }

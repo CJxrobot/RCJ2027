@@ -111,15 +111,16 @@ float wrap180(float a);                 // wrap to (-180, 180]
 #define CAM_FLAG_FRONT  0x02
 #define CAM_FLAG_BACK   0x04
 
-// ===== Sense -> Act, Serial8, 921600 =====
+// ===== /sense_data: Sense -> Act, Serial8, 921600 =====
+// Line + IR ball in ONE packet (11 bytes), so every packet has both:
+//   AA s0 s1 s2 s3 found angL angH strL strH chk     chk = sum of bytes [1..9]
+//   s0-s3: lineState, bit = 0 when that sensor sees the line (all 1 = no line)
+//   found: 1 = ball seen; angle 0-359 (0xFFFF if not seen); strength: higher = closer
+// Sent every loop while a line is seen, otherwise at SENSE_TX_HZ.
 #define SENSE_BAUD      921600
-// /line_data, high priority: AA s0 s1 s2 s3 chk   (6 bytes), chk = sum of bytes [1..4]
-#define LINE_HDR        0xAA
-#define LINE_LEN        6
-// /ir_ball_data, low priority (sent after the line packet, also while on a line):
-//   BB found angL angH strL strH chk   (7 bytes), chk = sum of bytes [1..5]
-#define BALL_HDR        0xBB
-#define BALL_LEN        7
+#define SENSE_HDR       0xAA
+#define SENSE_LEN       11
+#define SENSE_TX_HZ     100
 
 static inline uint8_t pkt_sum(const uint8_t* b, int from, int to) {
   uint8_t s = 0;
@@ -154,8 +155,8 @@ struct IrBallData {
 };
 
 struct SenseLinkStats {
-  uint32_t line_pkts = 0;
-  uint32_t ball_pkts = 0;
+  uint32_t pkts = 0;           // all packets
+  uint32_t line_pkts = 0;      // packets with a line in them
   uint32_t bad = 0;            // checksum errors
   uint32_t junk = 0;           // bytes dropped while looking for a header
 };
@@ -164,10 +165,10 @@ extern LineData lineData;
 extern IrBallData irBall;
 extern SenseLinkStats senseLinkStats;
 
-// Parse every byte waiting on Serial8, non-blocking.
-// Returns a bit mask of what arrived: SENSE_GOT_LINE | SENSE_GOT_BALL
-#define SENSE_GOT_LINE 0x01
-#define SENSE_GOT_BALL 0x02
+// Parse every byte waiting on Serial8, non-blocking. Every packet updates lineData AND irBall.
+// Returns a bit mask: SENSE_GOT_PKT (any packet) | SENSE_GOT_LINE (a packet with a line in it)
+#define SENSE_GOT_PKT  0x01
+#define SENSE_GOT_LINE 0x02
 uint8_t read_sense();
 
 // true if the IR ball packet is newer than max_age_ms and says the ball is seen

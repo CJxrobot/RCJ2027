@@ -1,9 +1,10 @@
 #include <Arduino.h>
 #include <core_act.h>
 
-// T02 (Act): one Serial8 parser for line (AA) and ball (BB) packets.
+// T02 (Act): Serial8 parser for the combined line + ball packet (AA, 11 bytes).
 // Sense runs test_sense_tx. Motors never move in this test.
-// Pass: ball ~100/s, bad 0, flag->line packet latency < 2000 us, ball angle sweeps 0-359
+// Pass: off the line ~100 pkts/s, on the line many more; bad 0; flag->line packet < 2000 us;
+//       ball angle keeps sweeping 0-359 also while on the line
 
 void setup() {
   core_act_init();
@@ -31,9 +32,9 @@ void loop() {
   static SenseLinkStats prev;
   EVERY_MS(tp, 1000) {
     SenseLinkStats s = senseLinkStats;
-    Serial.printf("line/s %5lu | ball/s %4lu | bad %lu | junk bytes %lu | flag->pkt worst %lu us | "
+    Serial.printf("pkts/s %5lu | with line %5lu | bad %lu | junk bytes %lu | flag->pkt worst %lu us | "
                   "ball %s %3.0f deg str %u | line %08lX\n",
-                  s.line_pkts - prev.line_pkts, s.ball_pkts - prev.ball_pkts, s.bad, s.junk,
+                  s.pkts - prev.pkts, s.line_pkts - prev.line_pkts, s.bad, s.junk,
                   worstLatency, irBall.found ? "seen" : "none", irBall.angle, irBall.strength,
                   lineData.state);
     prev = s;
