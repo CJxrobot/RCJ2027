@@ -242,7 +242,6 @@ bool camera_fresh(uint32_t max_age_ms);
 #define MIN_KICK_GAP_MS    500   // shortest time between kicks
 #define KICK_BURST         2     // kicks allowed in a row, then a rest
 #define KICK_REST_MS       2000  // rest after the burst: soft charge ramp over this time
-#define BALL_DEBOUNCE_MS   20    // possession pin must stay LOW this long
 
 enum KickState : uint8_t { KICK_CHARGING, KICK_CHARGED, KICK_DEAD, KICK_PULSE };
 
@@ -250,7 +249,7 @@ void kicker_begin();     // call once in setup(), after core_act_init()
 void kicker_update();    // call every loop, runs the state machine
 bool kicker_fire();      // request a kick, true if accepted (charged enough, gap ok)
 bool kicker_ready();     // true if kicker_fire() would be accepted now
-bool has_ball();         // debounced possession
+bool has_ball();         // pin 38 LOW = ball, read directly (hardware RC filter)
 KickState kicker_state();
 const char* kicker_state_name();
 uint32_t kicker_count(); // kicks since start

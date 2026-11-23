@@ -22,8 +22,8 @@ void loop() {
 
   lm.end();
   if (lm.report()) {
-    Serial.printf("loops/s %6lu | worst %4lu us | %-8s | ball %d | ready %d | shots left %u%s | kicks %lu\n",
-                  lm.loops, lm.worst, kicker_state_name(), has_ball(), kicker_ready(),
+    Serial.printf("loops/s %6lu | worst %4lu us | %-8s | pin38 %d ball %d | ready %d | shots left %u%s | kicks %lu\n",
+                  lm.loops, lm.worst, kicker_state_name(), digitalReadFast(KICK_BALL_PIN), has_ball(), kicker_ready(),
                   kicker_shots_left(), kicker_resting() ? " REST" : "", kicker_count());
     lm.reset();
   }

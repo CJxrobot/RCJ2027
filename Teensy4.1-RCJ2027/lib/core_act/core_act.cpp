@@ -26,7 +26,7 @@ void core_act_init() {
     pinMode(SLP, OUTPUT);
     digitalWrite(SLP, HIGH);   // wake motor drivers
 
-    pinMode(BALL_POSESSION, INPUT_PULLUP); // B6: same as the kicker, never floats
+    pinMode(BALL_POSESSION, INPUT);        // sensor has its own RC filter, read it as is
     pinMode(START_BUTTON, INPUT_PULLUP);
 
     // Line flag: stop motors the moment either pin goes HIGH, before UART data arrives
@@ -457,9 +457,6 @@ static bool resting = false;            // after the burst: soft charge for KICK
 static uint32_t rampMs = RAMP_MS;       // ramp length of the current charge, 0 = full at once
 static uint32_t readyAfterMs = KICK_MIN_CHARGE_MS; // charge time before the next kick
 
-static bool ballStable = false;
-static bool ballRaw = false;
-static uint32_t ballChange = 0;
 
 // ----- Software soft-charge PWM on pin 33 (IntervalTimer, no FlexPWM) -----
 static IntervalTimer chargeTimer;
@@ -519,7 +516,7 @@ void kicker_begin() {
   digitalWriteFast(KICK_DISCHARGE_PIN, LOW); // discharge off before anything else
   chargeDuty = -1;
   chargeWrite(0);
-  pinMode(KICK_BALL_PIN, INPUT_PULLUP);      // B6: no ball = HIGH, never floats
+  pinMode(KICK_BALL_PIN, INPUT);             // sensor has its own RC filter, read it as is
   shotsLeft = KICK_BURST;
   resting = false;
   rampMs = RAMP_MS;
@@ -527,15 +524,7 @@ void kicker_begin() {
   kickEnter(KICK_CHARGING);
 }
 
-static void updateBall() {
-  bool raw = digitalReadFast(KICK_BALL_PIN) == LOW;
-  uint32_t now = millis();
-  if (raw != ballRaw) { ballRaw = raw; ballChange = now; }
-  if (now - ballChange >= BALL_DEBOUNCE_MS) ballStable = ballRaw;
-}
-
 void kicker_update() {
-  updateBall();
   uint32_t t = millis() - kickStart;
 
   switch (kickSt) {
@@ -590,7 +579,7 @@ bool kicker_fire() {
   return true;
 }
 
-bool has_ball() { return ballStable; }
+bool has_ball() { return digitalReadFast(KICK_BALL_PIN) == LOW; }   // LOW = ball, no debounce
 KickState kicker_state() { return kickSt; }
 uint32_t kicker_count() { return kicks; }
 
