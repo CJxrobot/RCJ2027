@@ -63,8 +63,10 @@ void fast_update_line_sensor() {
         digitalWriteFast(LS_S1, (ch >> 1) & 1);
         digitalWriteFast(LS_S2, (ch >> 2) & 1);
         digitalWriteFast(LS_S3, (ch >> 3) & 1);
-        /*might be allowed to removed*/
-        delayMicroseconds(10);
+        // Mux settle time: sample the IR sensors here instead of waiting idle
+        uint32_t t0 = micros();
+        ir_sample();
+        while (micros() - t0 < 10) {}
 
         uint16_t r1 = analogRead(LS_M1);
         uint16_t r2 = analogRead(LS_M2);
@@ -76,24 +78,16 @@ void fast_update_line_sensor() {
     }
 
     // Bit clears only if below threshold in this scan AND the previous one
-    lineState = prevRaw | rawState;
+    lineState = prevRaw | rawState | ~LS_USED_MASK;
     prevRaw   = rawState;
 }
 
 // Call every loop after fast_update_line_sensor().
 // Line seen: PIN_0/PIN_1 HIGH, then send packet AA s0 s1 s2 s3 checksum (sum of s0-s3)
 // No line:   PIN_0/PIN_1 LOW, nothing sent
-void send_line_state() {
-    bool line = lineState != 0xFFFFFFFF; // M1 (bit 0-15) or M2 (bit 16-31)
-    digitalWriteFast(PIN_0, line);
-    digitalWriteFast(PIN_1, line);
-    if (!line) return;
-
-    uint8_t pkt[6] = {0xAA,
-                      (uint8_t)(lineState),       (uint8_t)(lineState >> 8),
-                      (uint8_t)(lineState >> 16), (uint8_t)(lineState >> 24), 0};
-    for (int i = 1; i <= 4; i++) pkt[5] += pkt[i];
-    Serial8.write(pkt, 6);
+// Returns true if a line packet was sent (the ball packet must then wait)
+bool send_line_state() {
+    return send_line_packet(lineState);
 }
 
 // Call every loop after fast_update_line_sensor().
@@ -120,7 +114,8 @@ bool calibrate_line_sensor() {
             Serial.println("Line scan start");
         } else {
             digitalWrite(LED_BUILTIN, LOW);
-            for (int i = 0; i < LS_COUNT; i++) {
+            for (int i = 0; i < 32; i++) {
+                if (!(LS_USED_MASK & (1UL << i))) continue; // no sensor on this channel
                 avg_ls[i] = (max_ls[i] + min_ls[i]) / 2;
                 Serial.printf("Sensor %d: min=%d, max=%d, avg=%d\n", i, min_ls[i], max_ls[i], avg_ls[i]);
             }
@@ -132,15 +127,9 @@ bool calibrate_line_sensor() {
     lastBtn = btn;
 
     if (scanning) {
-        for (int i = 0; i < LS_COUNT; i++) {
-            if (lsRaw[i] > max_ls[i]){
-                max_ls[i] = lsRaw[i];
-                Serial.printf("%d find max %d\n", i, max_ls[i]);
-            }
-            if (lsRaw[i] < min_ls[i]){
-                min_ls[i] = lsRaw[i];
-                Serial.printf("%d find min %d\n", i, min_ls[i]);
-            } 
+        for (int i = 0; i < 32; i++) { // both muxes
+            if (lsRaw[i] > max_ls[i]) max_ls[i] = lsRaw[i];
+            if (lsRaw[i] < min_ls[i]) min_ls[i] = lsRaw[i];
         }
 
         // Blink LED and print raw data every 100 ms

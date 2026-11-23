@@ -26,7 +26,7 @@ void core_act_init() {
     pinMode(SLP, OUTPUT);
     digitalWrite(SLP, HIGH);   // wake motor drivers
 
-    pinMode(BALL_POSESSION, INPUT);
+    pinMode(BALL_POSESSION, INPUT_PULLUP); // B6: same as the kicker, never floats
     pinMode(START_BUTTON, INPUT_PULLUP);
 
     // Line flag: stop motors the moment either pin goes HIGH, before UART data arrives
@@ -166,17 +166,11 @@ bool line_flag() {
 }
 
 // Packet: AA s0 s1 s2 s3 checksum (sum of s0-s3)
+// Uses the shared Serial8 parser, so ball packets (BB) are no longer thrown away
 bool read_line_state(uint32_t& state) {
-  bool got = false;
-  while (Serial8.available() >= 6) {
-    if (Serial8.peek() != 0xAA) { Serial8.read(); continue; } // resync
-    uint8_t b[6];
-    Serial8.readBytes(b, 6);
-    if ((uint8_t)(b[1] + b[2] + b[3] + b[4]) != b[5]) continue;
-    state = b[1] | (b[2] << 8) | (b[3] << 16) | ((uint32_t)b[4] << 24);
-    got = true;
-  }
-  return got;
+  if (!(read_sense() & SENSE_GOT_LINE)) return false;
+  state = lineData.state;
+  return true;
 }
 
 // Average direction of the sensors that see the line (bit = 0)
@@ -228,7 +222,7 @@ void MotorStop(){
 
 // ===== Motion =====
 // Wrap angle to (-180, 180]
-static float wrap180(float a) {
+float wrap180(float a) {
   while (a > 180.0f)   a -= 360.0f;
   while (a <= -180.0f) a += 360.0f;
   return a;
@@ -237,6 +231,11 @@ static float wrap180(float a) {
 // Current heading in the 90-forward convention
 static float currentHeading() {
   return 90.0f - gyroData.heading;
+}
+float current_heading() { return currentHeading(); }
+
+void set_target_heading(float h) {
+  robot.robot_heading = constrain(h, 45.0f, 135.0f);
 }
 
 // P controller with deadband: rotation command to reach target heading
