@@ -648,41 +648,35 @@ float kick_rotate(bool kicked, const FieldData& field) {
 bool kick_rotating() { return kickRotOn; }
 
 // ===== Vector field =====
-static void push(Vec2& f, float k, float dist_cm, float from_deg) {
-  float m = k * expf(-(dist_cm - VF_D0_CM) / VF_LAMBDA_CM);
-  Vec2 p = polar(m, from_deg + 180.0f);   // away from the object
-  f.x += p.x;
-  f.y += p.y;
+// Cut the part of v moving toward an object at from_deg, distance d: exponential deceleration
+static void slow_toward(Vec2& v, float from_deg, float d, float stop, float lambda) {
+  float ux = cosf(from_deg * DEG_TO_RAD), uy = sinf(from_deg * DEG_TO_RAD);
+  float into = v.x * ux + v.y * uy;
+  if (into <= 0) return;                         // moving away or along: keep
+  float k = min(1.0f, expf(-(d - stop) / lambda));
+  v.x -= k * into * ux;
+  v.y -= k * into * uy;
 }
 
 Vec2 Vector_Field(Vec2 v, const FieldData& field, const UsData& us) {
-  // Own penalty area (back goal) only
-  const FieldObj& g = field.back_goal;
-  if (camera_fresh(CAM_TIMEOUT_MS) && g.seen && g.dist != PKT_NONE &&
-      g.dist < PENALTY_R_CM + PENALTY_MARGIN_CM) {
-    float ux = cosf(g.angle * DEG_TO_RAD), uy = sinf(g.angle * DEG_TO_RAD); // toward the goal
-    float into = v.x * ux + v.y * uy;
-    if (into > 0) {   // cut only the part moving into the area, keep the sliding part
-      float k = clamp01((PENALTY_R_CM + PENALTY_MARGIN_CM - g.dist) / PENALTY_MARGIN_CM);
-      v.x -= k * into * ux;
-      v.y -= k * into * uy;
-    }
-    if (g.dist < PENALTY_R_CM) {  // already inside: push straight out
-      v.x -= VF_PENALTY_K * ux;
-      v.y -= VF_PENALTY_K * uy;
+  // Walls (R03): front 90, left 180, back 270, right 0. 0 = no reading.
+  if (us.front > 0) slow_toward(v, 90,  us.front, WALL_STOP_CM, WALL_LAMBDA_CM);
+  if (us.left  > 0) slow_toward(v, 180, us.left,  WALL_STOP_CM, WALL_LAMBDA_CM);
+  if (us.back  > 0) slow_toward(v, 270, us.back,  WALL_STOP_CM, WALL_LAMBDA_CM);
+  if (us.right > 0) slow_toward(v, 0,   us.right, WALL_STOP_CM, WALL_LAMBDA_CM);
+
+  if (!camera_fresh(CAM_TIMEOUT_MS)) return v;
+  const FieldObj& f = field.front_goal;
+  const FieldObj& b = field.back_goal;
+  if (f.seen && f.dist != PKT_NONE) slow_toward(v, f.angle, f.dist, GOAL_STOP_CM, GOAL_LAMBDA_CM);
+  if (b.seen && b.dist != PKT_NONE) {
+    slow_toward(v, b.angle, b.dist, GOAL_STOP_CM, GOAL_LAMBDA_CM);
+    slow_toward(v, b.angle, b.dist, PENALTY_R_CM, PENALTY_LAMBDA_CM);   // own penalty area
+    if (b.dist < PENALTY_R_CM) {                                         // inside: push out
+      v.x -= VF_PENALTY_K * cosf(b.angle * DEG_TO_RAD);
+      v.y -= VF_PENALTY_K * sinf(b.angle * DEG_TO_RAD);
     }
   }
-
-  // Walls (R03): front 90, left 180, back 270, right 0
-  Vec2 f;
-  if (us.front > 0) push(f, VF_K, us.front, 90);
-  if (us.left  > 0) push(f, VF_K, us.left, 180);
-  if (us.back  > 0) push(f, VF_K, us.back, 270);
-  if (us.right > 0) push(f, VF_K, us.right, 0);
-  float m = sqrtf(f.x * f.x + f.y * f.y);
-  if (m > VF_MAX) { f.x *= VF_MAX / m; f.y *= VF_MAX / m; }
-  v.x += f.x;
-  v.y += f.y;
   return v;
 }
 

@@ -280,15 +280,18 @@ uint32_t kicker_count(); // kicks since start
 #define HOME_SPEED         30.0f // no ball: drive toward own goal at this speed
 #define HOME_DIST_CM       60.0f // ... until the back goal is this close
 
-// ----- Vector field: own penalty area only (back goal) -----
-#define PENALTY_R_CM       45.0f // back goal distance at the penalty area edge (measure on the field)
-#define PENALTY_MARGIN_CM  15.0f // from R + margin down to R, motion toward the goal is cut 0 -> 100 %
-#define VF_PENALTY_K       30.0f // inside R: push straight out at this speed
-// ----- Walls (R03, used only once US_Sensor() is filled) -----
-#define VF_K               40.0f // push at VF_D0_CM from a wall
-#define VF_D0_CM           30.0f
-#define VF_LAMBDA_CM       15.0f // push falls by e every this many cm
-#define VF_MAX             40.0f // largest wall push
+// ----- Vector field (whole field) -----
+// Exponential deceleration toward each boundary: the part of v moving toward it is cut by
+//   k = exp(-(d - STOP) / LAMBDA), at most 1  (d <= STOP: fully cut, d = STOP + LAMBDA: 37 %)
+// Motion along a boundary is kept, so the robot slides instead of stopping.
+#define WALL_STOP_CM       15.0f // ultrasonic distance where motion toward a wall is fully cut (R03)
+#define WALL_LAMBDA_CM     10.0f
+#define GOAL_STOP_CM       25.0f // front / back goal distance where motion toward that end is fully cut
+#define GOAL_LAMBDA_CM     15.0f
+// Own penalty area (back goal only), on top of the above
+#define PENALTY_R_CM       45.0f // back goal distance at our penalty area edge (measure on the field)
+#define PENALTY_LAMBDA_CM  10.0f
+#define VF_PENALTY_K       30.0f // already inside R: push straight out at this speed
 
 // ----- Ultrasonic (R03) -----
 #define US_PERIOD_MS       15
@@ -344,12 +347,10 @@ float rotate(const FieldData& field);
 float kick_rotate(bool kicked, const FieldData& field);
 bool kick_rotating();    // true while the KICK_ROTATE_MS window is running
 
-// Keep out of our own penalty area (back goal only) while chasing:
-//   back goal closer than R + margin -> the part of v pointing into the area is cut
-//                                       (0 % at R + margin, 100 % at R), so the robot slides
-//                                       along the edge instead of crossing it
-//   back goal closer than R          -> also pushed straight out at VF_PENALTY_K
-// Walls are added once US_Sensor() is filled (R03). Returns the new velocity.
+// Whole-field vector field, returns the new velocity:
+//   walls (ultrasonic, R03), front goal, back goal -> exponential deceleration toward each
+//   own penalty area (back goal)                   -> same, with PENALTY_R_CM as the stop distance,
+//                                                     and a push out if already inside
 Vec2 Vector_Field(Vec2 v, const FieldData& field, const UsData& us);
 
 // Reserved R03: define it in your ultrasonic file and this zero version goes away
