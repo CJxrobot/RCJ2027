@@ -3,7 +3,9 @@
 
 // T09 (Act): merge_ball_data() + chase_ball(), with line priority for safety.
 // First run with the wheels off the ground and DRIVE 0 (START press toggles DRIVE).
-// Pass: source switches CAM / IR / NONE as expected; mode ORBIT -> CAPTURE -> PUSH as the
+// Ball fusion: both seen and within MERGE_MAX_ERR_DEG -> FUSED (camera angle + IR distance),
+//              disagree -> IR. The print shows both sources, their angle difference and the result.
+// Pass: source switches FUSED / CAM / IR / NONE as expected; mode ORBIT -> CAPTURE -> PUSH as the
 //       robot gets behind the ball; robot circles behind the ball and pushes it forward
 
 void setup() {
@@ -31,9 +33,11 @@ void loop() {
   else MotorStop();
 
   EVERY_MS(tp, 100) {
-    Serial.printf("DRIVE %d | src %-4s %-7s | ball %5.1f deg dist %5.1f | cam %s %5.1f | ir %s %5.1f | v (%5.1f, %5.1f)%s\n",
-                  drive, ball_src_name(ball.src), chase_mode_name(), ball.angle, ball.dist,
-                  fieldData.ball.seen ? "on " : "off", fieldData.ball.angle,
-                  irBall.found ? "on " : "off", irBall.angle, v.x, v.y, line.active ? " LINE" : "");
+    float diff = (fieldData.ball.seen && irBall.found) ? fabsf(wrap180(fieldData.ball.angle - irBall.angle)) : -1;
+    Serial.printf("DRIVE %d | cam %s %5.1f deg %4u px | ir %s %5.1f deg str %2u | diff %5.1f | -> %-5s %5.1f deg str %2.0f | %-7s v (%5.1f, %5.1f)%s\n",
+                  drive, fieldData.ball.seen ? "on " : "off", fieldData.ball.angle, fieldData.ball.dist,
+                  irBall.found ? "on " : "off", irBall.angle, irBall.strength, diff,
+                  ball_src_name(ball.src), ball.angle, ball.strength,
+                  chase_mode_name(), v.x, v.y, line.active ? " LINE" : "");
   }
 }

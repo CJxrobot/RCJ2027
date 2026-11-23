@@ -268,7 +268,7 @@ bool kicker_resting();   // true during the KICK_REST_MS rest after a burst
 #define IR_TIMEOUT_MS      50    // IR ball data older than this = missing
 
 // ----- Merge -----
-#define MERGE_MAX_ERR_DEG  90.0f // use camera ball only if within this angle of IR
+#define MERGE_MAX_ERR_DEG  30.0f // camera and IR angles closer than this: camera angle + IR distance
 
 // ----- Line -----
 #define LINE_AVOID_SPEED   40.0f // % speed while leaving a line
@@ -361,12 +361,14 @@ bool kicker_resting();   // true during the KICK_REST_MS rest after a burst
 
 struct Vec2 { float x = 0, y = 0; };
 
-enum BallSrc : uint8_t { SRC_NONE, SRC_CAM, SRC_IR };
+// SRC_FUSED = both seen and agree: angle from the camera, distance from IR
+enum BallSrc : uint8_t { SRC_NONE, SRC_CAM, SRC_IR, SRC_FUSED };
 struct MergedBall {
   BallSrc src = SRC_NONE;
   float angle = 0;
-  float dist = -1;       // camera ball distance, -1 for IR
-  float closeness = 0;   // IR only: 0 = far, 1 = touching
+  float dist = -1;       // camera ball distance (pixels), -1 when the camera has no ball
+  float strength = 0;    // IR distance: sensors seeing the ball (1-20), 0 when IR has no ball
+  float closeness = 0;   // from the IR strength: 0 = far, 1 = touching (0 when IR has no ball)
 };
 
 enum ChaseMode : uint8_t { CHASE_NONE, CHASE_HOME, CHASE_IR, CHASE_ORBIT, CHASE_CAPTURE, CHASE_PUSH };
@@ -397,8 +399,9 @@ void strategy_begin();   // copies HEADING_P / HEADING_DEADBAND into robot
 //   flag LOW                  -> still active for LINE_HOLD_MS, then inactive
 LineCtl back_to_field(bool got_line_packet);
 
-// Camera ball if fresh and within MERGE_MAX_ERR_DEG of IR, else IR if fresh,
-// else camera alone if IR is missing, else none.
+// Both seen, angles within MERGE_MAX_ERR_DEG -> FUSED: camera angle + IR distance
+// Both seen, angles farther apart            -> IR (angle and distance)
+// Only IR -> IR,  only camera -> CAM,  none -> NONE
 MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir);
 
 // Chase (reference code, tested):

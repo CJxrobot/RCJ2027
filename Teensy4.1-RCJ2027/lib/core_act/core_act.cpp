@@ -659,14 +659,26 @@ MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir) {
   bool cam = field_fresh(field) && field.ball.seen;
   bool irOk = ir_ball_fresh(IR_TIMEOUT_MS);
 
-  if (cam && (!irOk || fabsf(wrap180(field.ball.angle - ir.angle)) < MERGE_MAX_ERR_DEG)) {
-    m.src = SRC_CAM;
-    m.angle = field.ball.angle;
-    m.dist = field.ball.dist;
+  if (cam) m.dist = field.ball.dist;
+  if (irOk) {
+    m.strength = ir.strength;
+    m.closeness = clamp01((ir.strength - IR_FAR_STR) / (IR_NEAR_STR - IR_FAR_STR));
+  }
+
+  if (cam && irOk) {
+    if (fabsf(wrap180(field.ball.angle - ir.angle)) < MERGE_MAX_ERR_DEG) {
+      m.src = SRC_FUSED;              // agree: camera angle, IR distance
+      m.angle = field.ball.angle;
+    } else {
+      m.src = SRC_IR;                 // disagree: trust IR
+      m.angle = ir.angle;
+    }
   } else if (irOk) {
     m.src = SRC_IR;
     m.angle = ir.angle;
-    m.closeness = clamp01((ir.strength - IR_FAR_STR) / (IR_NEAR_STR - IR_FAR_STR));
+  } else if (cam) {
+    m.src = SRC_CAM;
+    m.angle = field.ball.angle;
   }
   return m;
 }
@@ -708,7 +720,8 @@ static float mapf(float x, float in0, float in1, float out0, float out1) {
 }
 
 Vec2 chase_ball(const MergedBall& ball, const FieldData& field) {
-  if (ball.src != SRC_CAM) capture_reset();
+  bool camBall = ball.src == SRC_CAM || ball.src == SRC_FUSED;   // camera angle + pixel distance
+  if (!camBall) capture_reset();
 
   if (ball.src == SRC_NONE) {
     const FieldObj& g = field.back_goal;
@@ -890,5 +903,6 @@ Vec2 Vector_Field(Vec2 v, const FieldData& field, const UsData& us) {
 }
 
 const char* ball_src_name(BallSrc s) {
-  return s == SRC_CAM ? "CAM" : (s == SRC_IR ? "IR" : "NONE");
+  static const char* n[] = {"NONE", "CAM", "IR", "FUSED"};
+  return n[s];
 }
