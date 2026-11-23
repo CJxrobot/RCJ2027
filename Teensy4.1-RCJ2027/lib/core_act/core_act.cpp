@@ -344,6 +344,10 @@ uint8_t read_sense() {
     got |= SENSE_GOT_PKT;
     if (lineData.state != 0xFFFFFFFF) { senseLinkStats.line_pkts++; got |= SENSE_GOT_LINE; }
   }
+  // Sense core stopped or unplugged: forget the ball and the line
+  uint32_t now = millis();
+  if (!got && irBall.t_ms != 0 && now - irBall.t_ms > IR_TIMEOUT_MS) irBall.found = false;
+  if (!got && lineData.t_ms != 0 && now - lineData.t_ms > IR_TIMEOUT_MS) lineData.state = 0xFFFFFFFF;
   return got;
 }
 
@@ -420,6 +424,12 @@ bool read_camera_v2() {
     fieldData.t_ms = millis();
     cameraStats.pkts++;
     got = true;
+  }
+  // Camera stopped or unplugged: forget everything so nothing old is used
+  if (!got && fieldData.t_ms != 0 && millis() - fieldData.t_ms > CAM_TIMEOUT_MS) {
+    fieldData.ball = FieldObj();
+    fieldData.front_goal = FieldObj();
+    fieldData.back_goal = FieldObj();
   }
   return got;
 }

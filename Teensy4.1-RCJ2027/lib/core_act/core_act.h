@@ -179,12 +179,14 @@ bool ir_ball_fresh(uint32_t max_age_ms);
 // Camera /field_data v2 (Serial3 DMA)
 // =====================================================================
 // /field_data v2 from the Maix Cam (Serial3, RX by DMA)
-// Angles: deg, robot frame, 0 = right, 90 = front, CCW. Distances: cm.
+// Angles: deg, robot frame, 0 = right, 90 = front, CCW.
+// Distances: ball = pixel radius from the image centre, goals = cm (camera formula).
+// No packet for CAM_TIMEOUT_MS -> read_camera_v2() clears ball and goals (seen = false).
 
 struct FieldObj {
   bool seen = false;
   float angle = 0;
-  uint16_t dist = PKT_NONE;
+  uint16_t dist = PKT_NONE;   // ball: pixels, goals: cm
 };
 
 struct FieldData {

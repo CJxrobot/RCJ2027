@@ -36,6 +36,7 @@ DISPLAY_FLIP_Y = True         # flip the preview up-down so it looks the right w
 #   flags: bit0 ball, bit1 front goal, bit2 back goal. 0xFFFF = not found.
 #   chk = sum of bytes [1..15] & 0xFF
 #   Angles: robot frame, 0 = right, 90 = front, 180 = left, 270 = back
+#   Distances: ball = pixel radius from the image centre, goals = cm (formula A, B, C)
 #   (same maths as the picker: the back goal reads 270, as act_defense was tested with)
 UART_BAUD = 115200
 TX_HZ = 200                   # 18 bytes at 115200 baud allow ~640 Hz

@@ -6,8 +6,8 @@
 // Pass: ~200 pkts/s with goal_ball_detection.py (~100 with cam_fake_v2.py), lost 0, bad 0
 //       ball front/right/back/left -> about 90 / 0 / 270 / 180 deg
 
-static void printObj(const char* name, const FieldObj& o) {
-  if (o.seen) Serial.printf("%s %3.0f deg %4u cm  ", name, o.angle, o.dist);
+static void printObj(const char* name, const FieldObj& o, const char* unit) {
+  if (o.seen) Serial.printf("%s %3.0f deg %4u %s  ", name, o.angle, o.dist, unit);
   else        Serial.printf("%s ---            ", name);
 }
 
@@ -24,9 +24,9 @@ void loop() {
 
   static CameraStats prev;
   EVERY_MS(tp, 100) {
-    printObj("ball", fieldData.ball);
-    printObj("front", fieldData.front_goal);
-    printObj("back", fieldData.back_goal);
+    printObj("ball", fieldData.ball, "px");
+    printObj("front", fieldData.front_goal, "cm");
+    printObj("back", fieldData.back_goal, "cm");
     Serial.printf("age %lu ms\n", fieldData.t_ms ? millis() - fieldData.t_ms : 0);
   }
   EVERY_MS(ts, 1000) {
