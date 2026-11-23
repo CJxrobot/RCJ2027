@@ -71,9 +71,9 @@ GOAL_IS_BLUE = GOAL_LAB is BLUE_LAB
 # 橘色球 (starting values — tune in MaixVision threshold tool)
 # keep A-min above the yellow goal's A-max (28) so the goal isn't read as the ball
 #ORANGE_LAB = [20, 80, 30, 80, 15, 70]
-ORANGE_LAB = [23, 100, 0, 37, -2, 13]
-CENTER_X = 160
-CENTER_Y = 120
+ORANGE_LAB = [44, 75, 6, 47, 10, 53]
+CENTER_X = 175
+CENTER_Y = 125
 R_MIN = 37
 R_MAX = 100
 

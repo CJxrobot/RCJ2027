@@ -7,22 +7,22 @@ TARGET = "ball"        # "yellow", "blue" or "ball"
 #
 #  2. Put it on the WHITE SQUARE(S) in the preview:
 #       goal -> 5 squares in a curve behind the robot
-#       ball -> 2 squares on the right (near + far), one ball on each
+#       ball -> 1 square on the right
 #  3. Read the terminal:   USE THIS: [L1, L2, A1, A2, B1, B2]
 #     Copy into main.py as YELLOW_LAB / BLUE_LAB / ORANGE_LAB.
 #
-#  BALL: 2 squares (near + far) are measured at the same time.
-#        Put one ball on each square.
+#  BALL: 1 square. Put the ball on it.
+#        Change BALL_SPOT below to move it (0 = R_MIN, 1 = R_MAX).
 #
 #  OPTIONAL: join results from several runs (e.g. different lighting).
 #     Paste each USE THIS into MERGE, the script joins and TESTS them.
 MERGE = [
-    [34, 41, 26, 35, 26, 35]
+    #[34, 41, 26, 35, 26, 35]
 ]
 #
 #  VERIFY: paste numbers here to test them (no measuring):
 #     TEST_LAB = [53, 79, -11, 14, 41, 71]
-TEST_LAB = None
+TEST_LAB = [44, 75, 6, 47, 10, 53]
 #
 #  Preview:
 #     purple box       = everything the numbers match inside the ring
@@ -35,10 +35,10 @@ TEST_LAB = None
 SETTINGS = {
     "yellow": dict(angle=90, r=75, span=30, n=5, size=6),
     "blue":   dict(angle=90, r=75, span=30, n=5, size=6),
-    "ball":   dict(angle=0,  r=60, span=0,  n=1, size=4),   # squares set by BALL_SPOTS
+    "ball":   dict(angle=0,  r=60, span=0,  n=1, size=4),   # position set by BALL_SPOT
 }
-# ball spots: position across the ring (0 = R_MIN, 1 = R_MAX), square size
-BALL_SPOTS = {1: (0.2, 6), 2: (0.5, 4)}
+# ball square: position across the ring (0 = R_MIN, 1 = R_MAX), square size
+BALL_SPOT = (0.5, 5)
 MARGIN = 5            # extra room added to each side of the result
 
 # ============================================================
@@ -75,9 +75,9 @@ if MERGE:
 # build the squares along the arc
 SQUARES = []
 if IS_BALL:
-    for f, size in BALL_SPOTS.values():
-        SQUARES.append(square_at(S["angle"], R_MIN + (R_MAX - R_MIN) * f, size))
-    print("ball squares at r =", [round(R_MIN + (R_MAX - R_MIN) * f) for f, _ in BALL_SPOTS.values()])
+    f, size = BALL_SPOT
+    SQUARES.append(square_at(S["angle"], R_MIN + (R_MAX - R_MIN) * f, size))
+    print("ball square at r =", round(R_MIN + (R_MAX - R_MIN) * f))
 for i in range(0 if IS_BALL else S["n"]):
     deg = S["angle"] if S["n"] == 1 else S["angle"] - S["span"] / 2 + S["span"] * i / (S["n"] - 1)
     SQUARES.append(square_at(deg, S["r"], S["size"]))
