@@ -4,13 +4,13 @@
 // T11 (Act): attack game program, same order as the system design
 //
 //   update_gyro / read camera / read sense / kicker_update
+//   if picked up (|pitch| > PICKUP_PITCH_DEG): motors off
 //   if line:  v = back_to_field()                        (highest priority)
 //   else:
-//     if ball held: kick; on a kick turn toward the front goal for KICK_ROTATE_MS, else hold 90
+//     ball held / corner shot: shoot_control() -> push forward, aim at the front goal, kick
+//     else: ball = merge_ball_data(camera ball, IR ball); v = chase_ball(ball), heading 90
 //     every US_PERIOD_MS: us = US_Sensor()               (reserved R03)
-//     ball = merge_ball_data(camera ball, IR ball)
-//     v  = chase_ball(ball)
-//     v  = Vector_Field(v, field, us)                    (keep out of our own penalty area)
+//     v = Vector_Field(v, field, us)                     (whole field + our penalty area)
 //   Vector_Motion(v)
 //
 // OLED is drawn only before START (a redraw takes ~25 ms).
@@ -60,19 +60,32 @@ void loop() {
   uint8_t got = read_sense();
   kicker_update();
 
+  if (picked_up()) {                 // lifted: stop, start again from heading 90
+    set_aim(false);
+    set_target_heading(90);
+    MotorStop();
+    return;
+  }
+
   Vec2 v;
   LineCtl line = back_to_field(got & SENSE_GOT_LINE);
   if (line.active) {
     v = line.v;
+    set_aim(false);
     set_target_heading(90);
   } else {
-    bool kicked = has_ball() && kicker_fire();
-    set_target_heading(kick_rotate(kicked, fieldData));
-
     if (millis() - lastUs >= US_PERIOD_MS) { lastUs = millis(); us = US_Sensor(); }
 
-    MergedBall ball = merge_ball_data(fieldData, irBall);
-    v = chase_ball(ball, fieldData);
+    ShootCtl shot = shoot_control(fieldData);
+    if (shot.active) {
+      v = shot.v;
+      set_aim(shot.aiming);
+      set_target_heading(shot.heading);
+    } else {
+      set_aim(false);
+      set_target_heading(90);
+      v = chase_ball(merge_ball_data(fieldData, irBall), fieldData);
+    }
     v = Vector_Field(v, fieldData, us);
   }
   Vector_Motion(v.x, v.y, 0);

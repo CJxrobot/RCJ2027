@@ -235,13 +235,52 @@ static float currentHeading() {
 float current_heading() { return currentHeading(); }
 
 void set_target_heading(float h) {
-  robot.robot_heading = constrain(h, 45.0f, 135.0f);
+  robot.robot_heading = constrain(h, 90.0f - robot.heading_limit, 90.0f + robot.heading_limit);
 }
 
+void set_aim(bool aiming) { robot.aiming = aiming; }
+
 // P controller with deadband: rotation command to reach target heading
+// PD controller with deadband.
+//   normal: P_factor + D_factor
+//   aiming: aim_P, no D, |omega| limited to aim_omega_max (0 = no limit)
+// D is reset when the mode changes or after a pause, so it never jumps.
 static float headingCorrection(float target_heading) {
+  static float prevErr = 0;
+  static uint32_t prevUs = 0;
+  static bool first = true, prevAim = false;
+
   float e = wrap180(target_heading - currentHeading());
-  return (fabsf(e) > robot.heading_threshold) ? e * robot.P_factor : 0.0f;
+  uint32_t now = micros();
+  float d = 0;
+  if (first || robot.aiming != prevAim) {
+    first = false;
+    prevAim = robot.aiming;
+    prevErr = e;
+    prevUs = now;
+  } else {
+    float dt = (now - prevUs) * 1e-6f;
+    if (dt >= 0.001f && dt <= 0.1f) {
+      d = wrap180(e - prevErr) / dt;
+      prevErr = e;
+      prevUs = now;
+    } else if (dt > 0.1f) {
+      prevErr = e;
+      prevUs = now;
+    }
+  }
+
+  if (fabsf(e) <= robot.heading_threshold) {
+    prevErr = e;
+    prevUs = now;
+    return 0.0f;
+  }
+  if (robot.aiming) {
+    float w = robot.aim_P * e;
+    if (robot.aim_omega_max > 0) w = constrain(w, -robot.aim_omega_max, robot.aim_omega_max);
+    return w;
+  }
+  return robot.P_factor * e + robot.D_factor * d;
 }
 
 void RobotIKControl(float vx, float vy, float omega) {
@@ -254,7 +293,8 @@ void RobotIKControl(float vx, float vy, float omega) {
 
 // Robot-frame motion; rot_V nudges the target heading, clamped to 45..135
 void Vector_Motion(float Vx, float Vy, float rot_V) {
-  robot.robot_heading = constrain(robot.robot_heading + rot_V, 45.0f, 135.0f);
+  robot.robot_heading = constrain(robot.robot_heading + rot_V,
+                                  90.0f - robot.heading_limit, 90.0f + robot.heading_limit);
   RobotIKControl(Vx, Vy, headingCorrection(robot.robot_heading));
 }
 
@@ -405,6 +445,10 @@ static uint32_t kickPulseStart = 0;   // micros() when DEAD / PULSE began
 static uint32_t lastKick = 0;
 static uint32_t kicks = 0;
 static int chargeDuty = -1;
+static uint8_t shotsLeft = KICK_BURST;  // kicks allowed before the rest
+static bool resting = false;            // after the burst: soft charge for KICK_REST_MS
+static uint32_t rampMs = RAMP_MS;       // ramp length of the current charge, 0 = full at once
+static uint32_t readyAfterMs = KICK_MIN_CHARGE_MS; // charge time before the next kick
 
 static bool ballStable = false;
 static bool ballRaw = false;
@@ -469,6 +513,10 @@ void kicker_begin() {
   chargeDuty = -1;
   chargeWrite(0);
   pinMode(KICK_BALL_PIN, INPUT_PULLUP);      // B6: no ball = HIGH, never floats
+  shotsLeft = KICK_BURST;
+  resting = false;
+  rampMs = RAMP_MS;
+  readyAfterMs = KICK_MIN_CHARGE_MS;
   kickEnter(KICK_CHARGING);
 }
 
@@ -485,8 +533,9 @@ void kicker_update() {
 
   switch (kickSt) {
     case KICK_CHARGING:
+      if (resting && t >= KICK_REST_MS) { resting = false; shotsLeft = KICK_BURST; }
       if (t >= CHARGE_TIMEOUT_MS) { chargeWrite(0); kickEnter(KICK_CHARGED); }
-      else chargeWrite(t >= RAMP_MS ? CHARGE_DUTY : (int)((uint32_t)CHARGE_DUTY * t / RAMP_MS));
+      else chargeWrite(t >= rampMs ? CHARGE_DUTY : (int)((uint32_t)CHARGE_DUTY * t / rampMs));
       break;
     case KICK_CHARGED:
       break;
@@ -502,6 +551,15 @@ void kicker_update() {
         digitalWriteFast(KICK_DISCHARGE_PIN, LOW);
         lastKick = millis();
         kicks++;
+        if (shotsLeft > 0) shotsLeft--;
+        if (shotsLeft == 0) {           // burst used up: rest and soft charge
+          resting = true;
+          rampMs = KICK_REST_MS;
+          readyAfterMs = KICK_REST_MS;
+        } else {                        // next shot of the burst: charge fully at once
+          rampMs = 0;
+          readyAfterMs = 0;
+        }
         kickEnter(KICK_CHARGING);
       }
       break;
@@ -509,10 +567,14 @@ void kicker_update() {
 }
 
 bool kicker_ready() {
-  if (millis() - lastKick < MIN_KICK_GAP_MS) return false;
+  if (resting || shotsLeft == 0) return false;
+  if (lastKick != 0 && millis() - lastKick < MIN_KICK_GAP_MS) return false;
   if (kickSt == KICK_CHARGED) return true;
-  return kickSt == KICK_CHARGING && millis() - kickStart >= KICK_MIN_CHARGE_MS;
+  return kickSt == KICK_CHARGING && millis() - kickStart >= readyAfterMs;
 }
+
+uint8_t kicker_shots_left() { return shotsLeft; }
+bool kicker_resting() { return resting; }
 
 bool kicker_fire() {
   if (!kicker_ready()) return false;
@@ -548,9 +610,21 @@ static float clamp01(float x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
 
 void strategy_begin() {
   robot.P_factor = HEADING_P;
+  robot.D_factor = HEADING_D;
   robot.heading_threshold = HEADING_DEADBAND;
+  robot.heading_limit = HEADING_LIMIT_DEG;
+  robot.aim_P = AIM_HEADING_P;
+  robot.aim_omega_max = AIM_OMEGA_MAX;
+  robot.aiming = false;
   robot.robot_heading = 90.0f;
 }
+
+// Camera data in this FieldData is newer than CAM_TIMEOUT_MS
+static bool field_fresh(const FieldData& f) {
+  return f.t_ms != 0 && millis() - f.t_ms <= CAM_TIMEOUT_MS;
+}
+
+bool picked_up() { return fabsf(gyroData.pitch) > PICKUP_PITCH_DEG; }
 
 __attribute__((weak)) UsData US_Sensor() { return UsData(); }
 
@@ -586,13 +660,13 @@ LineCtl back_to_field(bool got_line_packet) {
 // ===== Ball =====
 MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir) {
   MergedBall m;
-  bool cam = camera_fresh(CAM_TIMEOUT_MS) && field.ball.seen;
+  bool cam = field_fresh(field) && field.ball.seen;
   bool irOk = ir_ball_fresh(IR_TIMEOUT_MS);
 
   if (cam && (!irOk || fabsf(wrap180(field.ball.angle - ir.angle)) < MERGE_MAX_ERR_DEG)) {
     m.src = SRC_CAM;
     m.angle = field.ball.angle;
-    m.closeness = clamp01((ORBIT_FAR_CM - field.ball.dist) / (ORBIT_FAR_CM - ORBIT_NEAR_CM));
+    m.dist = field.ball.dist;
   } else if (irOk) {
     m.src = SRC_IR;
     m.angle = ir.angle;
@@ -601,51 +675,190 @@ MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir) {
   return m;
 }
 
+// Capture-mode state: filtered ball angle rate and hysteresis
+static struct {
+  bool init = false;
+  bool capture = false;
+  float last = 90, rate = 0, predErr = 0;
+  uint32_t us = 0, camT = 0;
+} cap;
+static ChaseMode lastChase = CHASE_NONE;
+
+static void capture_reset() { cap.init = false; cap.capture = false; cap.rate = 0; cap.predErr = 0; }
+
+// Update once per new camera packet
+static void capture_update(float angle, uint32_t cam_t) {
+  if (cap.init && cam_t == cap.camT) return;
+  uint32_t now = micros();
+  if (!cap.init) {
+    cap.init = true;
+    cap.last = angle;
+    cap.rate = 0;
+  } else {
+    float dt = constrain((now - cap.us) * 1e-6f, 0.005f, 0.1f);
+    float measured = wrap180(angle - cap.last) / dt;
+    cap.rate = CAPTURE_RATE_KEEP * cap.rate + (1.0f - CAPTURE_RATE_KEEP) * measured;
+    cap.last = angle;
+  }
+  cap.us = now;
+  cap.camT = cam_t;
+  cap.predErr = wrap180(angle + cap.rate * CAPTURE_LOOKAHEAD_S - 90.0f);
+  if (!cap.capture && fabsf(cap.predErr) < CAPTURE_ENTER_DEG) cap.capture = true;
+  else if (cap.capture && fabsf(cap.predErr) > CAPTURE_EXIT_DEG) cap.capture = false;
+}
+
+static float mapf(float x, float in0, float in1, float out0, float out1) {
+  return out0 + (x - in0) * (out1 - out0) / (in1 - in0);
+}
+
 Vec2 chase_ball(const MergedBall& ball, const FieldData& field) {
+  if (ball.src != SRC_CAM) capture_reset();
+
   if (ball.src == SRC_NONE) {
-    // No ball anywhere: go home toward our own goal, stop when close
     const FieldObj& g = field.back_goal;
-    if (camera_fresh(CAM_TIMEOUT_MS) && g.seen && g.dist > HOME_DIST_CM)
+    if (field_fresh(field) && g.seen && g.dist > HOME_DIST_CM) {
+      lastChase = CHASE_HOME;
       return polar(HOME_SPEED, g.angle);
+    }
+    lastChase = CHASE_NONE;
     return Vec2();
   }
 
-  float diff = wrap180(ball.angle - 90.0f);        // 0 = ball straight ahead
-  if (fabsf(diff) <= CHASE_FRONT_DEG) return polar(CHASE_SPEED, ball.angle);
+  if (ball.src == SRC_IR) {
+    lastChase = CHASE_IR;
+    return polar(IR_SPEED_MIN + (IR_SPEED_MAX - IR_SPEED_MIN) * ball.closeness, ball.angle);
+  }
 
-  // Ball to the side or behind: aim past it so the robot circles behind the ball.
-  // Closer ball -> bigger offset.
-  float offset = min(CHASE_OFFSET_MAX, CHASE_OFFSET_GAIN * fabsf(diff)) * ball.closeness;
-  float dir = ball.angle + (diff > 0 ? offset : -offset);
-  return polar(CHASE_SPEED, dir);
+  // Camera ball
+  float a = fmodf(ball.angle + 360.0f, 360.0f);
+  float d = ball.dist;
+  float off = fabsf(a - 90.0f);                       // same as the reference: 0..270
+
+  if (d <= PUSH_DIST && off <= PUSH_DEG) {             // right in front: push
+    lastChase = CHASE_PUSH;
+    Vec2 v;
+    v.y = PUSH_SPEED;
+    return v;
+  }
+
+  capture_update(a, field.t_ms);
+  if (cap.capture) {                                   // straight-line approach
+    lastChase = CHASE_CAPTURE;
+    float lat = -(CAPTURE_KP * cap.predErr + CAPTURE_KD * cap.rate);
+    lat = constrain(lat, -CAPTURE_MAX_LATERAL, CAPTURE_MAX_LATERAL);
+    Vec2 v;
+    v.x = lat;
+    v.y = sqrtf(fmaxf(0.0f, CAPTURE_SPEED * CAPTURE_SPEED - lat * lat));
+    return v;
+  }
+
+  lastChase = CHASE_ORBIT;
+  float speed = constrain(mapf(d, CHASE_DIST_NEAR, CHASE_DIST_FAR, CHASE_SPEED_MIN, CHASE_SPEED_MAX),
+                          CHASE_SPEED_MIN, CHASE_SPEED_MAX);
+  float dir = a;
+  if (d < CHASE_ORBIT_DIST) {
+    speed *= 0.6f + 0.4f * (1.0f - clamp01(off / 90.0f));
+    if (off <= CHASE_FRONT_DEG) {
+      speed = CHASE_FRONT_SPEED;
+    } else {
+      float side = (a > 90.0f + CHASE_FRONT_DEG && a < 270.0f) ? 1.0f : -1.0f;
+      float ratio = (d <= ORBIT_FULL_DIST) ? 1.0f : expf(-ORBIT_DECAY * (d - ORBIT_FULL_DIST));
+      dir = a + side * ORBIT_OFFSET_DEG * ratio;
+    }
+  }
+  return polar(speed, dir);
+}
+
+ChaseMode chase_mode() { return lastChase; }
+const char* chase_mode_name() {
+  static const char* n[] = {"NONE", "HOME", "IR", "ORBIT", "CAPTURE", "PUSH"};
+  return n[lastChase];
 }
 
 // ===== Heading =====
 float rotate(const FieldData& field) {
   const FieldObj& g = field.front_goal;
-  if (!camera_fresh(CAM_TIMEOUT_MS) || !g.seen) return 90.0f;
+  if (!field_fresh(field) || !g.seen) return 90.0f;
   // Turning CCW by d moves an object's angle by -d, so turn by (goal - 90)
   return current_heading() + wrap180(g.angle - 90.0f);
 }
 
-// Short turn when kicking
-static uint32_t kickRotStart = 0;
-static bool kickRotOn = false;
-static float kickRotTarget = 90.0f;
-
-float kick_rotate(bool kicked, const FieldData& field) {
-  if (kicked) {
-    float t = rotate(field);                         // 90 if the front goal is not seen
-    float d = constrain(wrap180(t - current_heading()), -KICK_ROTATE_MAX_DEG, KICK_ROTATE_MAX_DEG);
-    kickRotTarget = current_heading() + d;
-    kickRotStart = millis();
-    kickRotOn = true;
-  }
-  if (kickRotOn && millis() - kickRotStart >= KICK_ROTATE_MS) kickRotOn = false;
-  return kickRotOn ? kickRotTarget : 90.0f;
+// ===== Shooting =====
+bool in_corner(const FieldData& field) {
+  const FieldObj& g = field.front_goal;
+  return field_fresh(field) && g.seen && g.dist < CORNER_GOAL_DIST_CM &&
+         fabsf(wrap180(g.angle - 90.0f)) > CORNER_GOAL_DEG;
 }
 
-bool kick_rotating() { return kickRotOn; }
+enum CornerState : uint8_t { CORNER_IDLE, CORNER_BACKUP, CORNER_AIM, CORNER_SHOOT, CORNER_WAIT };
+
+ShootCtl shoot_control(const FieldData& field) {
+  static CornerState cs = CORNER_IDLE;
+  static uint32_t ct = 0, holdStart = 0;
+  static bool hadBall = false, kicked = false, cornerKicked = false;
+  static float aimHeading = 90;
+
+  ShootCtl out;
+  uint32_t now = millis();
+  bool ball = has_ball();
+  const FieldObj& g = field.front_goal;
+  bool goalOk = field_fresh(field) && g.seen;
+  float goalErr = goalOk ? wrap180(g.angle - 90.0f) : 0;
+
+  if (ball && !hadBall) { holdStart = now; kicked = false; }
+  hadBall = ball;
+
+  // ----- corner shot -----
+  if (cs != CORNER_IDLE && !ball) cs = CORNER_IDLE;       // ball lost: give up
+  if (cs == CORNER_IDLE && ball && in_corner(field)) { cs = CORNER_BACKUP; ct = now; aimHeading = 90; }
+
+  if (cs != CORNER_IDLE) {
+    out.active = true;
+    switch (cs) {
+      case CORNER_BACKUP:
+        out.phase = "C-BACK";
+        out.v.y = -CORNER_BACK_SPEED;
+        if (now - ct >= CORNER_BACK_MS) { cs = CORNER_AIM; ct = now; }
+        break;
+      case CORNER_AIM:
+        out.phase = "C-AIM";
+        out.aiming = true;
+        if (goalOk) aimHeading = current_heading() + goalErr;
+        out.heading = aimHeading;
+        if ((goalOk && fabsf(goalErr) < CORNER_AIM_OK_DEG) || now - ct >= CORNER_AIM_MAX_MS) {
+          cs = CORNER_SHOOT; ct = now; cornerKicked = false;
+        }
+        break;
+      case CORNER_SHOOT:
+        out.phase = "C-SHOOT";
+        out.aiming = true;
+        out.heading = aimHeading;                           // keep the aimed heading
+        out.v.y = CORNER_SHOOT_SPEED;
+        if (!cornerKicked) cornerKicked = kicker_fire();
+        if (now - ct >= CORNER_SHOOT_MS) cs = CORNER_WAIT;
+        break;
+      default:                                              // CORNER_WAIT
+        out.phase = "C-WAIT";
+        break;                                              // stop, heading 90
+    }
+    return out;
+  }
+
+  // ----- normal shot -----
+  if (!ball) return out;
+  out.active = true;
+  if (goalOk) {
+    out.phase = "AIM";
+    out.aiming = true;
+    out.heading = current_heading() + goalErr;
+    out.v.y = AIM_PUSH_SPEED;
+  } else {
+    out.phase = "PUSH";
+    out.v.y = NOGOAL_PUSH_SPEED;
+  }
+  if (!kicked && now - holdStart >= KICK_HOLD_MS) kicked = kicker_fire();
+  return out;
+}
 
 // ===== Vector field =====
 // Cut the part of v moving toward an object at from_deg, distance d: exponential deceleration
@@ -665,7 +878,7 @@ Vec2 Vector_Field(Vec2 v, const FieldData& field, const UsData& us) {
   if (us.back  > 0) slow_toward(v, 270, us.back,  WALL_STOP_CM, WALL_LAMBDA_CM);
   if (us.right > 0) slow_toward(v, 0,   us.right, WALL_STOP_CM, WALL_LAMBDA_CM);
 
-  if (!camera_fresh(CAM_TIMEOUT_MS)) return v;
+  if (!field_fresh(field)) return v;
   const FieldObj& f = field.front_goal;
   const FieldObj& b = field.back_goal;
   if (f.seen && f.dist != PKT_NONE) slow_toward(v, f.angle, f.dist, GOAL_STOP_CM, GOAL_LAMBDA_CM);

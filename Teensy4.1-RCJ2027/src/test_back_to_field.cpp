@@ -24,7 +24,8 @@ void loop() {
   float vx, vy;
   if (line.active) { vx = line.v.x; vy = line.v.y; }
   else { vx = DRIVE_SPEED * cosf(driveDir * DEG_TO_RAD); vy = DRIVE_SPEED * sinf(driveDir * DEG_TO_RAD); }
-  Vector_Motion(vx, vy, 0);
+  if (picked_up()) MotorStop();
+  else Vector_Motion(vx, vy, 0);
 
   static bool lastActive = false;
   if (line.active != lastActive) {

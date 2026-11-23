@@ -38,7 +38,8 @@ void loop() {
   Vec2 v = Vector_Field(in, fieldData, US_Sensor());
   if (line.active) v = line.v;
   set_target_heading(90);
-  Vector_Motion(v.x, v.y, 0);
+  if (picked_up()) MotorStop();
+  else Vector_Motion(v.x, v.y, 0);
 
   if (fieldData.back_goal.seen && fieldData.back_goal.dist < minBack) minBack = fieldData.back_goal.dist;
   EVERY_MS(tp, 100) {

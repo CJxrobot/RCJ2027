@@ -4,7 +4,8 @@
 // T05 (Act): kicker without delay(), debounced possession, motor 3 unaffected by charging.
 // After START: motor 3 runs at 30 %. Push a ball into the catcher: it kicks when ready.
 // Press START again to stop / start motor 3.
-// Pass: worst loop < 1000 us during kicks, kicks only when ready, motor 3 steady while charging
+// Pass: worst loop < 1000 us during kicks, kicks only when ready, motor 3 steady while charging,
+//       2 kicks (500 ms apart) then a 2 s rest (REST shown) before the next kick
 
 void setup() {
   core_act_init();
@@ -26,8 +27,9 @@ void loop() {
 
   lm.end();
   if (lm.report()) {
-    Serial.printf("loops/s %6lu | worst %4lu us | %-8s | ball %d | ready %d | kicks %lu | motor3 %s\n",
+    Serial.printf("loops/s %6lu | worst %4lu us | %-8s | ball %d | ready %d | shots left %u%s | kicks %lu | motor3 %s\n",
                   lm.loops, lm.worst, kicker_state_name(), has_ball(), kicker_ready(),
+                  kicker_shots_left(), kicker_resting() ? " REST" : "",
                   kicker_count(), motorOn ? "30%" : "off");
     lm.reset();
   }

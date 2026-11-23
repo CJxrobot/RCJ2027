@@ -39,6 +39,11 @@ struct RobotState {
     float robot_heading = 90.0f;     // target heading used by Vector_Motion
     float heading_threshold = 2.0f;  // deg, no correction inside this band
     float P_factor = 0.5f;           // omega per degree of heading error
+    float D_factor = 0.0f;           // omega per deg/s (0 = P only, as before)
+    float heading_limit = 45.0f;     // target heading stays within 90 +- this
+    bool  aiming = false;            // true: aim_P, no D, omega limited (set_aim())
+    float aim_P = 1.5f;
+    float aim_omega_max = 0.0f;      // 0 = no limit
 };
 
 // Top camera (MaixCam, Serial3); angle/dist = 0xFFFF when goal not found
@@ -78,7 +83,8 @@ void MotorStop();
 void RobotIKControl(float vx, float vy, float omega);
 void Vector_Motion(float Vx, float Vy, float rot_V);
 void FC_Vector_Motion(float WVx, float WVy, float target_heading);
-void set_target_heading(float h);       // absolute target, limited to 45..135 (90 = facing forward)
+void set_target_heading(float h);       // absolute target, limited to 90 +- robot.heading_limit
+void set_aim(bool aiming);              // aiming: robot.aim_P, no D (see RobotState)
 float current_heading();                // gyro heading in the 90-forward convention
 float wrap180(float a);                 // wrap to (-180, 180]
 
@@ -228,8 +234,10 @@ bool camera_fresh(uint32_t max_age_ms);
 #define CHARGE_TIMEOUT_MS  5000  // charge time, then charging stops
 #define KICK_MIN_CHARGE_MS 1000  // charge at least this long before a kick is allowed
 #define DEAD_MS            2     // charge off -> discharge on
-#define KICK_MS            10    // discharge pulse
+#define KICK_MS            15    // discharge pulse (15 ms in the tested reference code)
 #define MIN_KICK_GAP_MS    500   // shortest time between kicks
+#define KICK_BURST         2     // kicks allowed in a row, then a rest
+#define KICK_REST_MS       2000  // rest after the burst: soft charge ramp over this time
 #define BALL_DEBOUNCE_MS   20    // possession pin must stay LOW this long
 
 enum KickState : uint8_t { KICK_CHARGING, KICK_CHARGED, KICK_DEAD, KICK_PULSE };
@@ -242,6 +250,8 @@ bool has_ball();         // debounced possession
 KickState kicker_state();
 const char* kicker_state_name();
 uint32_t kicker_count(); // kicks since start
+uint8_t kicker_shots_left();
+bool kicker_resting();   // true during the KICK_REST_MS rest after a burst
 
 
 // =====================================================================
@@ -261,23 +271,64 @@ uint32_t kicker_count(); // kicks since start
 #define LINE_AVOID_SPEED   40.0f // % speed while leaving a line
 #define LINE_HOLD_MS       150   // keep moving away after the flag clears
 
-// ----- Heading -----
-#define HEADING_P          0.5f  // copied into robot.P_factor by strategy_begin()
+// ----- Heading (PD, values from the tested reference code) -----
+#define HEADING_P          0.7f  // copied into robot.P_factor by strategy_begin()
+#define HEADING_D          0.03f // copied into robot.D_factor
 #define HEADING_DEADBAND   2.0f  // copied into robot.heading_threshold
-#define KICK_ROTATE_MS     300   // after a kick: turn toward the front goal this long,
-                                 // then back to 90 (heading hold)
-#define KICK_ROTATE_MAX_DEG 45.0f // largest turn during KICK_ROTATE_MS
+#define HEADING_LIMIT_DEG  60.0f // target heading stays within 90 +- this
+#define PICKUP_PITCH_DEG   15.0f // |pitch| above this = robot picked up -> motors stop
 
-// ----- Chase -----
-#define CHASE_SPEED        50.0f
+// ----- Shooting (ball held) -----
+#define AIM_PUSH_SPEED     80.0f // front goal seen: push forward at this speed while aiming
+#define NOGOAL_PUSH_SPEED  50.0f // front goal not seen: push forward, heading 90
+#define AIM_HEADING_P      1.5f  // heading P while aiming (no D)
+#define AIM_OMEGA_MAX      0.0f  // |omega| limit while aiming, 0 = no limit (as tested)
+#define KICK_HOLD_MS       50    // hold the ball this long, then kick once
+
+// ----- Corner shot -----
+// "In the corner" = front goal seen, closer than CORNER_GOAL_DIST_CM and more than
+// CORNER_GOAL_DEG off the front. Measure both on the field.
+#define CORNER_GOAL_DIST_CM 60.0f
+#define CORNER_GOAL_DEG    40.0f
+#define CORNER_BACK_SPEED  30.0f // 1. back up
+#define CORNER_BACK_MS     700
+#define CORNER_AIM_OK_DEG  6.0f  // 2. turn to the goal until within this, or
+#define CORNER_AIM_MAX_MS  2500  //    give up aiming after this
+#define CORNER_SHOOT_SPEED 35.0f // 3. push forward and kick
+#define CORNER_SHOOT_MS    300   // 4. then wait until the ball has left
+
+// ----- Chase (values from the tested reference code) -----
+// Distances are camera ball distances. The reference camera sent the image radius in
+// pixels, not cm: re-measure these with our camera code (R01).
+#define CHASE_SPEED_MIN    40.0f // speed at CHASE_DIST_NEAR
+#define CHASE_SPEED_MAX    70.0f // speed at CHASE_DIST_FAR
+#define CHASE_DIST_NEAR    25.0f
+#define CHASE_DIST_FAR     55.0f
+#define CHASE_ORBIT_DIST   65.0f // closer than this: slow down off-front and circle
 #define CHASE_FRONT_DEG    15.0f // ball within 90 +- this: drive straight at it
-#define CHASE_OFFSET_GAIN  1.0f  // offset = gain x angle from front x closeness
-#define CHASE_OFFSET_MAX   90.0f
-#define ORBIT_NEAR_CM      20.0f // camera distance where closeness = 1
-#define ORBIT_FAR_CM       60.0f // camera distance where closeness = 0
+#define CHASE_FRONT_SPEED  50.0f
+#define ORBIT_OFFSET_DEG   90.0f // circling offset when close
+#define ORBIT_FULL_DIST    55.0f // closer than this: full offset
+#define ORBIT_DECAY        1.5f  // farther: offset x exp(-decay x (dist - full))
+#define PUSH_DIST          37.0f // ball this close and within 90 +- PUSH_DEG:
+#define PUSH_DEG           10.0f //   drive straight forward at PUSH_SPEED
+#define PUSH_SPEED         80.0f
+// Capture mode (straight-line approach with prediction), hysteresis on the predicted error
+#define CAPTURE_ENTER_DEG  14.0f
+#define CAPTURE_EXIT_DEG   25.0f
+#define CAPTURE_LOOKAHEAD_S 0.07f // predict the ball angle this far ahead
+#define CAPTURE_RATE_KEEP  0.75f // angle-rate filter: old share (new share = 1 - this)
+#define CAPTURE_SPEED      80.0f
+#define CAPTURE_KP         0.75f
+#define CAPTURE_KD         0.15f
+#define CAPTURE_MAX_LATERAL 50.0f
+// IR only (no camera ball): drive straight at the ball
+#define IR_SPEED_MIN       50.0f // speed at closeness 0
+#define IR_SPEED_MAX       70.0f // speed at closeness 1
 #define IR_NEAR_STR        600.0f // IR strength where closeness = 1 (set after R02)
 #define IR_FAR_STR         100.0f // IR strength where closeness = 0 (set after R02)
-#define HOME_SPEED         30.0f // no ball: drive toward own goal at this speed
+// No ball
+#define HOME_SPEED         30.0f // drive toward our own goal at this speed
 #define HOME_DIST_CM       60.0f // ... until the back goal is this close
 
 // ----- Vector field (whole field) -----
@@ -311,7 +362,19 @@ enum BallSrc : uint8_t { SRC_NONE, SRC_CAM, SRC_IR };
 struct MergedBall {
   BallSrc src = SRC_NONE;
   float angle = 0;
-  float closeness = 0;   // 0 = far, 1 = touching
+  float dist = -1;       // camera ball distance, -1 for IR
+  float closeness = 0;   // IR only: 0 = far, 1 = touching
+};
+
+enum ChaseMode : uint8_t { CHASE_NONE, CHASE_HOME, CHASE_IR, CHASE_ORBIT, CHASE_CAPTURE, CHASE_PUSH };
+
+// Shooting / corner shot output
+struct ShootCtl {
+  bool active = false;   // true: use v / heading / aiming instead of chasing
+  Vec2 v;
+  float heading = 90;
+  bool aiming = false;
+  const char* phase = "";
 };
 
 // Ultrasonic distances in cm, 0 = no reading (filled by US_Sensor(), reserved R03)
@@ -335,17 +398,27 @@ LineCtl back_to_field(bool got_line_packet);
 // else camera alone if IR is missing, else none.
 MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir);
 
-// Get behind the ball. No ball: drive home toward the back goal (if seen), else stop.
+// Chase (reference code, tested):
+//   camera ball: capture mode (predicted error < CAPTURE_ENTER_DEG, leaves at > CAPTURE_EXIT_DEG)
+//                else orbit: speed by distance, straight when in front, circle when close;
+//                very close and in front: push forward at PUSH_SPEED
+//   IR ball:     straight at the ball, IR_SPEED_MIN..MAX by closeness
+//   no ball:     drive home toward the back goal (if seen), else stop
 Vec2 chase_ball(const MergedBall& ball, const FieldData& field);
+ChaseMode chase_mode();          // what chase_ball() did last
+const char* chase_mode_name();
 
 // Target heading so the front goal ends up at 90 deg. 90 if the goal is not seen.
 float rotate(const FieldData& field);
 
-// Short turn when kicking. Call every loop with kicked = true in the loop kicker_fire()
-// returned true. On a kick: latch rotate(field) (at most KICK_ROTATE_MAX_DEG away) and hold it
-// for KICK_ROTATE_MS. Otherwise returns 90 (heading hold).
-float kick_rotate(bool kicked, const FieldData& field);
-bool kick_rotating();    // true while the KICK_ROTATE_MS window is running
+// Ball held (and the corner shot sequence). Call every loop:
+//   normal: push forward, aim at the front goal (AIM_HEADING_P), kick once after KICK_HOLD_MS
+//   corner: back up -> aim -> push + kick -> wait for the ball to leave
+ShootCtl shoot_control(const FieldData& field);
+bool in_corner(const FieldData& field);
+
+// Robot lifted (|pitch| > PICKUP_PITCH_DEG): stop the motors and reset the heading target
+bool picked_up();
 
 // Whole-field vector field, returns the new velocity:
 //   walls (ultrasonic, R03), front goal, back goal -> exponential deceleration toward each
