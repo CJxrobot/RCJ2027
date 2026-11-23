@@ -270,3 +270,362 @@ void FC_Vector_Motion(float WVx, float WVy, float target_heading) {
 
   RobotIKControl(robot_vx, robot_vy, headingCorrection(target_heading));
 }
+
+// =====================================================================
+// Sense link (Serial8 parser)
+// =====================================================================
+LineData lineData;
+IrBallData irBall;
+SenseLinkStats senseLinkStats;
+
+uint8_t read_sense() {
+  static uint8_t buf[8];
+  static uint8_t n = 0, need = 0;
+  uint8_t got = 0;
+
+  while (Serial8.available()) {
+    uint8_t b = Serial8.read();
+
+    if (n == 0) {                      // waiting for a header
+      if (b == LINE_HDR)      need = LINE_LEN;
+      else if (b == BALL_HDR) need = BALL_LEN;
+      else { senseLinkStats.junk++; continue; }
+    }
+    buf[n++] = b;
+    if (n < need) continue;
+    n = 0;
+
+    if (need == LINE_LEN) {
+      if (pkt_sum(buf, 1, 4) != buf[5]) { senseLinkStats.bad++; continue; }
+      lineData.state = buf[1] | (buf[2] << 8) | (buf[3] << 16) | ((uint32_t)buf[4] << 24);
+      lineData.t_ms = millis();
+      senseLinkStats.line_pkts++;
+      got |= SENSE_GOT_LINE;
+    } else {
+      if (pkt_sum(buf, 1, 5) != buf[6]) { senseLinkStats.bad++; continue; }
+      uint16_t a = pkt_u16(buf, 2);
+      irBall.found = buf[1] && a < 360;
+      if (irBall.found) irBall.angle = a;
+      irBall.strength = pkt_u16(buf, 4);
+      irBall.t_ms = millis();
+      senseLinkStats.ball_pkts++;
+      got |= SENSE_GOT_BALL;
+    }
+  }
+  return got;
+}
+
+bool ir_ball_fresh(uint32_t max_age_ms) {
+  return irBall.found && irBall.t_ms != 0 && millis() - irBall.t_ms <= max_age_ms;
+}
+
+// =====================================================================
+// Camera /field_data v2 (Serial3 DMA)
+// =====================================================================
+FieldData fieldData;
+CameraStats cameraStats;
+
+// Same DMA setup as camera_dma_begin() in core_act.cpp, larger ring for 18-byte packets
+#define CAM2_BUF 128 // power of 2, buffer aligned to its size
+static volatile uint8_t cam2Rx[CAM2_BUF] __attribute__((aligned(CAM2_BUF)));
+static DMAChannel cam2Dma;
+
+void camera_v2_begin() {
+  Serial3.begin(CAM_BAUD);
+  NVIC_DISABLE_IRQ(IRQ_LPUART2);
+  LPUART2_CTRL &= ~(LPUART_CTRL_RIE | LPUART_CTRL_ILIE);
+  LPUART2_WATER = LPUART_WATER_RXWATER(0);
+
+  cam2Dma.begin(true);
+  cam2Dma.source((volatile const unsigned char&)LPUART2_DATA);
+  cam2Dma.destinationCircular(cam2Rx, CAM2_BUF);
+  cam2Dma.triggerAtHardwareEvent(DMAMUX_SOURCE_LPUART2_RX);
+  cam2Dma.enable();
+  LPUART2_BAUD |= LPUART_BAUD_RDMAE;
+}
+
+static void decode(FieldObj& o, bool seen, const uint8_t* b, int i) {
+  uint16_t a = pkt_u16(b, i);
+  o.seen = seen && a < 360;
+  if (o.seen) {
+    o.angle = a;
+    o.dist = pkt_u16(b, i + 2);
+  } else {
+    o.dist = PKT_NONE;
+  }
+}
+
+bool read_camera_v2() {
+  static uint8_t buf[CAM_LEN];
+  static int n = 0;
+  static uint32_t tail = 0;
+  static bool first = true;
+  bool got = false;
+
+  uint32_t head = (uint32_t)cam2Dma.TCD->DADDR - (uint32_t)cam2Rx;
+  while (tail != head) {
+    uint8_t b = cam2Rx[tail];
+    tail = (tail + 1) % CAM2_BUF;
+    if (n == 0 && b != CAM_H1) continue;
+    if (n == 1 && b != CAM_H2) { n = (b == CAM_H1); continue; }
+    buf[n++] = b;
+    if (n < CAM_LEN) continue;
+    n = 0;
+
+    if (buf[CAM_LEN - 1] != CAM_END || pkt_sum(buf, 1, 15) != buf[16]) {
+      cameraStats.bad++;
+      continue;
+    }
+    uint8_t flags = buf[2];
+    decode(fieldData.ball,       flags & CAM_FLAG_BALL,  buf, 3);
+    decode(fieldData.front_goal, flags & CAM_FLAG_FRONT, buf, 7);
+    decode(fieldData.back_goal,  flags & CAM_FLAG_BACK,  buf, 11);
+
+    uint8_t seq = buf[15];
+    if (!first) cameraStats.lost += (uint8_t)(seq - fieldData.seq - 1);
+    first = false;
+    fieldData.seq = seq;
+    fieldData.t_ms = millis();
+    cameraStats.pkts++;
+    got = true;
+  }
+  return got;
+}
+
+bool camera_fresh(uint32_t max_age_ms) {
+  return fieldData.t_ms != 0 && millis() - fieldData.t_ms <= max_age_ms;
+}
+
+// =====================================================================
+// Kicker
+// =====================================================================
+static KickState kickSt = KICK_CHARGING;
+static uint32_t kickStart = 0;   // millis() when the state began
+static uint32_t kickPulseStart = 0;   // micros() when DEAD / PULSE began
+static uint32_t lastKick = 0;
+static uint32_t kicks = 0;
+static int chargeDuty = -1;
+
+static bool ballStable = false;
+static bool ballRaw = false;
+static uint32_t ballChange = 0;
+
+static void chargeWrite(int d) {
+  if (d == chargeDuty) return;
+  chargeDuty = d;
+  if (d <= 0 || d >= 255) {
+    bool on = d >= 255;
+    pinMode(KICK_CHARGE_PIN, OUTPUT);
+    digitalWriteFast(KICK_CHARGE_PIN, on == KICK_CHARGE_ON_HIGH ? HIGH : LOW);
+  } else {
+    analogWrite(KICK_CHARGE_PIN, KICK_CHARGE_ON_HIGH ? d : 255 - d); // default frequency
+  }
+}
+
+static void kickEnter(KickState s) {
+  kickSt = s;
+  kickStart = millis();
+  kickPulseStart = micros();
+}
+
+void kicker_begin() {
+  pinMode(KICK_DISCHARGE_PIN, OUTPUT);
+  digitalWriteFast(KICK_DISCHARGE_PIN, LOW); // discharge off before anything else
+  chargeDuty = -1;
+  chargeWrite(0);
+  pinMode(KICK_BALL_PIN, INPUT_PULLUP);      // B6: no ball = HIGH, never floats
+  kickEnter(KICK_CHARGING);
+}
+
+static void updateBall() {
+  bool raw = digitalReadFast(KICK_BALL_PIN) == LOW;
+  uint32_t now = millis();
+  if (raw != ballRaw) { ballRaw = raw; ballChange = now; }
+  if (now - ballChange >= BALL_DEBOUNCE_MS) ballStable = ballRaw;
+}
+
+void kicker_update() {
+  updateBall();
+  uint32_t t = millis() - kickStart;
+
+  switch (kickSt) {
+    case KICK_CHARGING:
+      if (t >= CHARGE_TIMEOUT_MS) { chargeWrite(0); kickEnter(KICK_CHARGED); }
+      else chargeWrite(t >= RAMP_MS ? CHARGE_DUTY : (int)((uint32_t)CHARGE_DUTY * t / RAMP_MS));
+      break;
+    case KICK_CHARGED:
+      break;
+    case KICK_DEAD:   // charge is off, wait before opening the discharge
+      if (micros() - kickPulseStart >= DEAD_MS * 1000UL) {
+        digitalWriteFast(KICK_DISCHARGE_PIN, HIGH);
+        kickPulseStart = micros();
+        kickSt = KICK_PULSE;
+      }
+      break;
+    case KICK_PULSE:
+      if (micros() - kickPulseStart >= KICK_MS * 1000UL) {
+        digitalWriteFast(KICK_DISCHARGE_PIN, LOW);
+        lastKick = millis();
+        kicks++;
+        kickEnter(KICK_CHARGING);
+      }
+      break;
+  }
+}
+
+bool kicker_ready() {
+  if (millis() - lastKick < MIN_KICK_GAP_MS) return false;
+  if (kickSt == KICK_CHARGED) return true;
+  return kickSt == KICK_CHARGING && millis() - kickStart >= KICK_MIN_CHARGE_MS;
+}
+
+bool kicker_fire() {
+  if (!kicker_ready()) return false;
+  chargeWrite(0);            // charge and discharge are never on together
+  kickEnter(KICK_DEAD);
+  return true;
+}
+
+bool has_ball() { return ballStable; }
+KickState kicker_state() { return kickSt; }
+uint32_t kicker_count() { return kicks; }
+
+const char* kicker_state_name() {
+  switch (kickSt) {
+    case KICK_CHARGING: return "CHARGING";
+    case KICK_CHARGED:  return "CHARGED";
+    case KICK_DEAD:     return "DEAD";
+    default:            return "PULSE";
+  }
+}
+
+// =====================================================================
+// Strategy
+// =====================================================================
+static Vec2 polar(float speed, float deg) {
+  Vec2 v;
+  v.x = speed * cosf(deg * DEG_TO_RAD);
+  v.y = speed * sinf(deg * DEG_TO_RAD);
+  return v;
+}
+
+static float clamp01(float x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
+
+void strategy_begin() {
+  robot.P_factor = HEADING_P;
+  robot.heading_threshold = HEADING_DEADBAND;
+  robot.robot_heading = 90.0f;
+}
+
+__attribute__((weak)) UsData US_Sensor() { return UsData(); }
+
+// ===== Line =====
+LineCtl back_to_field(bool got_line_packet) {
+  static bool active = false;
+  static float first = -1;   // direction when the line was first seen
+  static float away = 0;
+  static float dir = -1;
+  static uint32_t lastFlag = 0;
+
+  LineCtl out;
+  uint32_t now = millis();
+
+  if (line_flag()) {
+    lastFlag = now;
+    if (!active) { active = true; first = -1; dir = -1; }
+    if (got_line_packet) {
+      if (first < 0) first = line_angle(lineData.state);
+      float d = line_angle(lineData.state, first);
+      if (d >= 0) { dir = d; away = d + 180.0f; }
+    }
+  } else if (active && now - lastFlag >= LINE_HOLD_MS) {
+    active = false;
+  }
+
+  out.active = active;
+  out.line_dir = dir;
+  if (active && dir >= 0) out.v = polar(LINE_AVOID_SPEED, away);
+  return out;
+}
+
+// ===== Ball =====
+MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir) {
+  MergedBall m;
+  bool cam = camera_fresh(CAM_TIMEOUT_MS) && field.ball.seen;
+  bool irOk = ir_ball_fresh(IR_TIMEOUT_MS);
+
+  if (cam && (!irOk || fabsf(wrap180(field.ball.angle - ir.angle)) < MERGE_MAX_ERR_DEG)) {
+    m.src = SRC_CAM;
+    m.angle = field.ball.angle;
+    m.closeness = clamp01((ORBIT_FAR_CM - field.ball.dist) / (ORBIT_FAR_CM - ORBIT_NEAR_CM));
+  } else if (irOk) {
+    m.src = SRC_IR;
+    m.angle = ir.angle;
+    m.closeness = clamp01((ir.strength - IR_FAR_STR) / (IR_NEAR_STR - IR_FAR_STR));
+  }
+  return m;
+}
+
+Vec2 chase_ball(const MergedBall& ball, const FieldData& field) {
+  if (ball.src == SRC_NONE) {
+    // No ball anywhere: go home toward our own goal, stop when close
+    const FieldObj& g = field.back_goal;
+    if (camera_fresh(CAM_TIMEOUT_MS) && g.seen && g.dist > HOME_DIST_CM)
+      return polar(HOME_SPEED, g.angle);
+    return Vec2();
+  }
+
+  float diff = wrap180(ball.angle - 90.0f);        // 0 = ball straight ahead
+  if (fabsf(diff) <= CHASE_FRONT_DEG) return polar(CHASE_SPEED, ball.angle);
+
+  // Ball to the side or behind: aim past it so the robot circles behind the ball.
+  // Closer ball -> bigger offset.
+  float offset = min(CHASE_OFFSET_MAX, CHASE_OFFSET_GAIN * fabsf(diff)) * ball.closeness;
+  float dir = ball.angle + (diff > 0 ? offset : -offset);
+  return polar(CHASE_SPEED, dir);
+}
+
+// ===== Heading =====
+float rotate(const FieldData& field) {
+  const FieldObj& g = field.front_goal;
+  if (!camera_fresh(CAM_TIMEOUT_MS) || !g.seen) return 90.0f;
+  // Turning CCW by d moves an object's angle by -d, so turn by (goal - 90)
+  return current_heading() + wrap180(g.angle - 90.0f);
+}
+
+// ===== Vector field =====
+static void push(Vec2& f, float k, float dist_cm, float from_deg) {
+  float m = k * expf(-(dist_cm - VF_D0_CM) / VF_LAMBDA_CM);
+  Vec2 p = polar(m, from_deg + 180.0f);   // away from the object
+  f.x += p.x;
+  f.y += p.y;
+}
+
+Vec2 Vector_Field(const FieldData& field, const UsData& us) {
+  Vec2 f;
+  if (camera_fresh(CAM_TIMEOUT_MS)) {
+    const FieldObj* goals[2] = {&field.front_goal, &field.back_goal};
+    for (const FieldObj* g : goals) {
+      if (!g->seen || g->dist == PKT_NONE) continue;
+      push(f, VF_K, g->dist, g->angle);
+      if (g->dist < PENALTY_R_CM) {        // inside the curved penalty area
+        Vec2 p = polar(VF_PENALTY_K, g->angle + 180.0f);
+        f.x += p.x;
+        f.y += p.y;
+      }
+    }
+  }
+  // Walls (R03): front 90, left 180, back 270, right 0
+  if (us.front > 0) push(f, VF_K, us.front, 90);
+  if (us.left  > 0) push(f, VF_K, us.left, 180);
+  if (us.back  > 0) push(f, VF_K, us.back, 270);
+  if (us.right > 0) push(f, VF_K, us.right, 0);
+
+  float m = sqrtf(f.x * f.x + f.y * f.y);
+  if (m > VF_MAX) { f.x *= VF_MAX / m; f.y *= VF_MAX / m; }
+  return f;
+}
+
+const char* ball_src_name(BallSrc s) {
+  return s == SRC_CAM ? "CAM" : (s == SRC_IR ? "IR" : "NONE");
+}
