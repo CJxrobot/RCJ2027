@@ -74,9 +74,9 @@ ORANGE_LAB = [44, 75, 6, 47, 10, 53]
 # Only the Y (up-down) flip is applied now. The old values (175, 125) were measured with
 # both flips, so X is mirrored: 319 - 175 = 144, Y stays 125.
 # If the centre cross is not on the robot centre, re-measure both in the debug view.
-CENTER_X = 144
-CENTER_Y = 125
-R_MIN = 37
+CENTER_X = 175
+CENTER_Y = 116
+R_MIN = 35
 R_MAX = 100
 
 BALL_R_MIN = R_MIN

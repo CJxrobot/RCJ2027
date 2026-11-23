@@ -516,7 +516,7 @@ void kicker_begin() {
   digitalWriteFast(KICK_DISCHARGE_PIN, LOW); // discharge off before anything else
   chargeDuty = -1;
   chargeWrite(0);
-  pinMode(KICK_BALL_PIN, INPUT_PULLUP);      // same as act_kicker_ball.cpp (tested): HIGH = no ball
+  pinMode(KICK_BALL_PIN, INPUT);      // same as act_kicker_ball.cpp (tested): HIGH = no ball
   shotsLeft = KICK_BURST;
   resting = false;
   rampMs = RAMP_MS;

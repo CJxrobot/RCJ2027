@@ -45,7 +45,7 @@ void loop() {
   digitalWriteFast(LED_BUILTIN, lineState != 0xFFFFFFFF);
   loops++;
 
-  if (millis() - lastPrint >= 1000) {
+  if (millis() - lastPrint >= 100) {
     lastPrint = millis();
     SenseTxStats s = senseTxStats;
     Serial.printf("loops/s %5lu | pkts/s %5lu | with line %5lu | tx full %lu | ball %s %3u deg str %u | line %08lX\n",
