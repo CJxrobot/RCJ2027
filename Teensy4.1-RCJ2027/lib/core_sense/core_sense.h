@@ -69,7 +69,8 @@ bool send_line_state();       // set PIN_0/PIN_1, send lineState to act core (Se
 // /line_data, high priority: AA s0 s1 s2 s3 chk   (6 bytes), chk = sum of bytes [1..4]
 #define LINE_HDR        0xAA
 #define LINE_LEN        6
-// /ir_ball_data, low priority: BB found angL angH strL strH chk   (7 bytes), chk = sum of bytes [1..5]
+// /ir_ball_data, low priority (sent after the line packet, also while on a line):
+//   BB found angL angH strL strH chk   (7 bytes), chk = sum of bytes [1..5]
 #define BALL_HDR        0xBB
 #define BALL_LEN        7
 
@@ -108,19 +109,18 @@ IrBall compute_ir_ball();
 // Returns true if a packet was sent this call.
 bool send_line_packet(uint32_t state);
 
-// Ball packet (low priority). Sends BB packet only if:
-//   - no line packet was sent in this loop (line_sent == false)
+// Ball packet (low priority). Always sent, also while a line is seen (the act core needs
+// the ball position there too). In each loop the line packet goes out first. Sent only if:
 //   - at least 1000/BALL_TX_HZ ms since the last ball packet
 //   - Serial8 has room for the whole packet
 // Returns true if a packet was sent.
 #define BALL_TX_HZ 100
-bool send_ball_packet(const IrBall& ball, bool line_sent);
+bool send_ball_packet(const IrBall& ball);
 
 // Counters for test programs
 struct SenseTxStats {
   uint32_t line_pkts = 0;
   uint32_t ball_pkts = 0;
-  uint32_t ball_skipped_line = 0; // ball due but skipped because a line packet went out
   uint32_t ball_skipped_full = 0; // ball due but Serial8 TX buffer was full
 };
 extern SenseTxStats senseTxStats;

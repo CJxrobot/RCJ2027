@@ -85,7 +85,7 @@ void fast_update_line_sensor() {
 // Call every loop after fast_update_line_sensor().
 // Line seen: PIN_0/PIN_1 HIGH, then send packet AA s0 s1 s2 s3 checksum (sum of s0-s3)
 // No line:   PIN_0/PIN_1 LOW, nothing sent
-// Returns true if a line packet was sent (the ball packet must then wait)
+// Returns true if a line packet was sent
 bool send_line_state() {
     return send_line_packet(lineState);
 }
@@ -171,12 +171,11 @@ bool send_line_packet(uint32_t state) {
   return true;
 }
 
-bool send_ball_packet(const IrBall& ball, bool line_sent) {
+bool send_ball_packet(const IrBall& ball) {
   static uint32_t last = 0;
   uint32_t now = micros();
   if (now - last < 1000000UL / BALL_TX_HZ) return false; // not due yet
 
-  if (line_sent) { senseTxStats.ball_skipped_line++; return false; }
   if (Serial8.availableForWrite() < BALL_LEN) { senseTxStats.ball_skipped_full++; return false; }
 
   uint8_t p[BALL_LEN] = {BALL_HDR, (uint8_t)ball.found, 0, 0, 0, 0, 0};
