@@ -365,6 +365,7 @@ CameraStats cameraStats;
 #define CAM2_BUF 128 // power of 2, buffer aligned to its size
 static volatile uint8_t cam2Rx[CAM2_BUF] __attribute__((aligned(CAM2_BUF)));
 static DMAChannel cam2Dma;
+static bool cam2Started = false;   // read_camera_v2() does nothing before camera_v2_begin()
 
 void camera_v2_begin() {
   Serial3.begin(CAM_BAUD);
@@ -378,6 +379,7 @@ void camera_v2_begin() {
   cam2Dma.triggerAtHardwareEvent(DMAMUX_SOURCE_LPUART2_RX);
   cam2Dma.enable();
   LPUART2_BAUD |= LPUART_BAUD_RDMAE;
+  cam2Started = true;
 }
 
 static void decode(FieldObj& o, bool seen, const uint8_t* b, int i) {
@@ -398,7 +400,10 @@ bool read_camera_v2() {
   static bool first = true;
   bool got = false;
 
-  uint32_t head = (uint32_t)cam2Dma.TCD->DADDR - (uint32_t)cam2Rx;
+  // Not started: the DMA address is not our buffer, so "head" would be garbage and the
+  // loop below would never end (this froze every test that never called camera_v2_begin)
+  if (!cam2Started) return false;
+  uint32_t head = ((uint32_t)cam2Dma.TCD->DADDR - (uint32_t)cam2Rx) % CAM2_BUF;
   while (tail != head) {
     uint8_t b = cam2Rx[tail];
     tail = (tail + 1) % CAM2_BUF;
