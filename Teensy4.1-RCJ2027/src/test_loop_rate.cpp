@@ -27,8 +27,8 @@ void loop() {
   LineCtl line = back_to_field(got & SENSE_GOT_LINE);
   MergedBall ball = merge_ball_data(fieldData, irBall);
   Vec2 v = chase_ball(ball, fieldData);
-  Vec2 f = Vector_Field(fieldData, US_Sensor());
-  volatile float sink = v.x + f.x + rotate(fieldData) + line.v.x;
+  Vec2 f = Vector_Field(v, fieldData, US_Sensor());
+  volatile float sink = v.x + f.x + kick_rotate(false, fieldData) + line.v.x;
   (void)sink;
 
   lm.end();

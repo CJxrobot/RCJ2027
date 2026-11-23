@@ -210,17 +210,20 @@ bool camera_fresh(uint32_t max_age_ms);
 // Kicker + ball possession, no delay() anywhere (fixes B4, B5, B6)
 // 12 V -> XL6019 boost -> IRF5305 P-MOS (pin 33) -> 20000 uF cap -> solenoid, discharge (pin 32)
 //
-// B5: pin 33 shares FlexPWM2.0 with pin 4 (motor 3 PWM). The old program called
-//     analogWriteFrequency(33, 1000), which also moved motor 3 to 1 kHz.
-//     Here the charge PWM keeps the default frequency, the same one the motors use,
-//     so nothing changes for motor 3. Never call analogWriteFrequency on pin 33 or 4.
+// B5: pin 33 shares FlexPWM2.0 with pin 4 (motor 3 PWM), so hardware PWM on pin 33
+//     would change motor 3. Soft charge is done in software instead: an IntervalTimer
+//     (PIT) toggles pin 33 with digitalWriteFast, two interrupts per PWM period
+//     (one at the on edge, one at the off edge). Motor 3 is never touched.
+//     Never call analogWrite / analogWriteFrequency on pin 33.
 
 #define KICK_CHARGE_PIN    33
 #define KICK_DISCHARGE_PIN 32
 #define KICK_BALL_PIN      38    // LOW = ball (same pin as BALL_POSESSION)
 #define KICK_CHARGE_ON_HIGH 1    // 1: pin HIGH = P-MOS on
 
+#define CHARGE_FREQ        1000  // Hz, software PWM frequency while ramping
 #define CHARGE_DUTY        255   // duty after the ramp (255 = fully on)
+#define CHARGE_MIN_EDGE_US 20    // on/off time shorter than this -> pin stays fully off/on
 #define RAMP_MS            1000  // soft charge ramp 0 -> CHARGE_DUTY
 #define CHARGE_TIMEOUT_MS  5000  // charge time, then charging stops
 #define KICK_MIN_CHARGE_MS 1000  // charge at least this long before a kick is allowed
@@ -261,8 +264,9 @@ uint32_t kicker_count(); // kicks since start
 // ----- Heading -----
 #define HEADING_P          0.5f  // copied into robot.P_factor by strategy_begin()
 #define HEADING_DEADBAND   2.0f  // copied into robot.heading_threshold
-#define KICK_ALIGN_DEG     180.0f // kick only when the front goal is within 90 +- this.
-                                  // 180 = kick as soon as the ball is held (as in the design)
+#define KICK_ROTATE_MS     300   // after a kick: turn toward the front goal this long,
+                                 // then back to 90 (heading hold)
+#define KICK_ROTATE_MAX_DEG 45.0f // largest turn during KICK_ROTATE_MS
 
 // ----- Chase -----
 #define CHASE_SPEED        50.0f
@@ -276,13 +280,15 @@ uint32_t kicker_count(); // kicks since start
 #define HOME_SPEED         30.0f // no ball: drive toward own goal at this speed
 #define HOME_DIST_CM       60.0f // ... until the back goal is this close
 
-// ----- Vector field -----
-#define VF_K               40.0f // push at VF_D0_CM from a goal or wall
+// ----- Vector field: own penalty area only (back goal) -----
+#define PENALTY_R_CM       45.0f // back goal distance at the penalty area edge (measure on the field)
+#define PENALTY_MARGIN_CM  15.0f // from R + margin down to R, motion toward the goal is cut 0 -> 100 %
+#define VF_PENALTY_K       30.0f // inside R: push straight out at this speed
+// ----- Walls (R03, used only once US_Sensor() is filled) -----
+#define VF_K               40.0f // push at VF_D0_CM from a wall
 #define VF_D0_CM           30.0f
 #define VF_LAMBDA_CM       15.0f // push falls by e every this many cm
-#define PENALTY_R_CM       45.0f // goal distance treated as the penalty area edge
-#define VF_PENALTY_K       60.0f // extra push inside PENALTY_R_CM
-#define VF_MAX             40.0f // largest total push
+#define VF_MAX             40.0f // largest wall push
 
 // ----- Ultrasonic (R03) -----
 #define US_PERIOD_MS       15
@@ -332,8 +338,19 @@ Vec2 chase_ball(const MergedBall& ball, const FieldData& field);
 // Target heading so the front goal ends up at 90 deg. 90 if the goal is not seen.
 float rotate(const FieldData& field);
 
-// Push away from goals (and walls, once US_Sensor() is filled), limited to VF_MAX
-Vec2 Vector_Field(const FieldData& field, const UsData& us);
+// Short turn when kicking. Call every loop with kicked = true in the loop kicker_fire()
+// returned true. On a kick: latch rotate(field) (at most KICK_ROTATE_MAX_DEG away) and hold it
+// for KICK_ROTATE_MS. Otherwise returns 90 (heading hold).
+float kick_rotate(bool kicked, const FieldData& field);
+bool kick_rotating();    // true while the KICK_ROTATE_MS window is running
+
+// Keep out of our own penalty area (back goal only) while chasing:
+//   back goal closer than R + margin -> the part of v pointing into the area is cut
+//                                       (0 % at R + margin, 100 % at R), so the robot slides
+//                                       along the edge instead of crossing it
+//   back goal closer than R          -> also pushed straight out at VF_PENALTY_K
+// Walls are added once US_Sensor() is filled (R03). Returns the new velocity.
+Vec2 Vector_Field(Vec2 v, const FieldData& field, const UsData& us);
 
 // Reserved R03: define it in your ultrasonic file and this zero version goes away
 UsData US_Sensor();

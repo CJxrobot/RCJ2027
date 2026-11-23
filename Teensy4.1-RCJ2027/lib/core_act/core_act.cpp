@@ -410,15 +410,49 @@ static bool ballStable = false;
 static bool ballRaw = false;
 static uint32_t ballChange = 0;
 
+// ----- Software soft-charge PWM on pin 33 (IntervalTimer, no FlexPWM) -----
+static IntervalTimer chargeTimer;
+static volatile uint32_t chargeOnUs = 0, chargeOffUs = 0;
+static volatile bool chargeLevel = false;  // true = P-MOS on
+static bool chargeTimerRunning = false;
+
+static inline void chargePin(bool on) {
+  digitalWriteFast(KICK_CHARGE_PIN, on == KICK_CHARGE_ON_HIGH ? HIGH : LOW);
+}
+
+// One interrupt per edge. The PIT loads a new interval only at the NEXT timeout,
+// so after switching to a level we set the length of the level after it.
+static void chargeIsr() {
+  chargeLevel = !chargeLevel;
+  chargePin(chargeLevel);
+  chargeTimer.update(chargeLevel ? chargeOffUs : chargeOnUs);
+}
+
+// d = 0..255. Very short on or off times are not worth an interrupt:
+// the pin then just stays fully off / fully on.
 static void chargeWrite(int d) {
   if (d == chargeDuty) return;
   chargeDuty = d;
-  if (d <= 0 || d >= 255) {
-    bool on = d >= 255;
-    pinMode(KICK_CHARGE_PIN, OUTPUT);
-    digitalWriteFast(KICK_CHARGE_PIN, on == KICK_CHARGE_ON_HIGH ? HIGH : LOW);
-  } else {
-    analogWrite(KICK_CHARGE_PIN, KICK_CHARGE_ON_HIGH ? d : 255 - d); // default frequency
+  uint32_t period = 1000000UL / CHARGE_FREQ;
+  uint32_t on = period * (uint32_t)constrain(d, 0, 255) / 255;
+  uint32_t off = period - on;
+
+  if (on < CHARGE_MIN_EDGE_US || off < CHARGE_MIN_EDGE_US) {  // steady level
+    if (chargeTimerRunning) { chargeTimer.end(); chargeTimerRunning = false; }
+    chargeLevel = on >= CHARGE_MIN_EDGE_US;
+    chargePin(chargeLevel);
+    return;
+  }
+  noInterrupts();
+  chargeOnUs = on;
+  chargeOffUs = off;
+  interrupts();
+  if (!chargeTimerRunning) {        // start with the pin off for one off-time
+    chargeLevel = false;
+    chargePin(false);
+    chargeTimer.begin(chargeIsr, off);
+    chargeTimer.update(on);         // length of the first on-time
+    chargeTimerRunning = true;
   }
 }
 
@@ -429,6 +463,7 @@ static void kickEnter(KickState s) {
 }
 
 void kicker_begin() {
+  pinMode(KICK_CHARGE_PIN, OUTPUT);           // plain GPIO, never FlexPWM (B5)
   pinMode(KICK_DISCHARGE_PIN, OUTPUT);
   digitalWriteFast(KICK_DISCHARGE_PIN, LOW); // discharge off before anything else
   chargeDuty = -1;
@@ -593,6 +628,25 @@ float rotate(const FieldData& field) {
   return current_heading() + wrap180(g.angle - 90.0f);
 }
 
+// Short turn when kicking
+static uint32_t kickRotStart = 0;
+static bool kickRotOn = false;
+static float kickRotTarget = 90.0f;
+
+float kick_rotate(bool kicked, const FieldData& field) {
+  if (kicked) {
+    float t = rotate(field);                         // 90 if the front goal is not seen
+    float d = constrain(wrap180(t - current_heading()), -KICK_ROTATE_MAX_DEG, KICK_ROTATE_MAX_DEG);
+    kickRotTarget = current_heading() + d;
+    kickRotStart = millis();
+    kickRotOn = true;
+  }
+  if (kickRotOn && millis() - kickRotStart >= KICK_ROTATE_MS) kickRotOn = false;
+  return kickRotOn ? kickRotTarget : 90.0f;
+}
+
+bool kick_rotating() { return kickRotOn; }
+
 // ===== Vector field =====
 static void push(Vec2& f, float k, float dist_cm, float from_deg) {
   float m = k * expf(-(dist_cm - VF_D0_CM) / VF_LAMBDA_CM);
@@ -601,29 +655,35 @@ static void push(Vec2& f, float k, float dist_cm, float from_deg) {
   f.y += p.y;
 }
 
-Vec2 Vector_Field(const FieldData& field, const UsData& us) {
-  Vec2 f;
-  if (camera_fresh(CAM_TIMEOUT_MS)) {
-    const FieldObj* goals[2] = {&field.front_goal, &field.back_goal};
-    for (const FieldObj* g : goals) {
-      if (!g->seen || g->dist == PKT_NONE) continue;
-      push(f, VF_K, g->dist, g->angle);
-      if (g->dist < PENALTY_R_CM) {        // inside the curved penalty area
-        Vec2 p = polar(VF_PENALTY_K, g->angle + 180.0f);
-        f.x += p.x;
-        f.y += p.y;
-      }
+Vec2 Vector_Field(Vec2 v, const FieldData& field, const UsData& us) {
+  // Own penalty area (back goal) only
+  const FieldObj& g = field.back_goal;
+  if (camera_fresh(CAM_TIMEOUT_MS) && g.seen && g.dist != PKT_NONE &&
+      g.dist < PENALTY_R_CM + PENALTY_MARGIN_CM) {
+    float ux = cosf(g.angle * DEG_TO_RAD), uy = sinf(g.angle * DEG_TO_RAD); // toward the goal
+    float into = v.x * ux + v.y * uy;
+    if (into > 0) {   // cut only the part moving into the area, keep the sliding part
+      float k = clamp01((PENALTY_R_CM + PENALTY_MARGIN_CM - g.dist) / PENALTY_MARGIN_CM);
+      v.x -= k * into * ux;
+      v.y -= k * into * uy;
+    }
+    if (g.dist < PENALTY_R_CM) {  // already inside: push straight out
+      v.x -= VF_PENALTY_K * ux;
+      v.y -= VF_PENALTY_K * uy;
     }
   }
+
   // Walls (R03): front 90, left 180, back 270, right 0
+  Vec2 f;
   if (us.front > 0) push(f, VF_K, us.front, 90);
   if (us.left  > 0) push(f, VF_K, us.left, 180);
   if (us.back  > 0) push(f, VF_K, us.back, 270);
   if (us.right > 0) push(f, VF_K, us.right, 0);
-
   float m = sqrtf(f.x * f.x + f.y * f.y);
   if (m > VF_MAX) { f.x *= VF_MAX / m; f.y *= VF_MAX / m; }
-  return f;
+  v.x += f.x;
+  v.y += f.y;
+  return v;
 }
 
 const char* ball_src_name(BallSrc s) {

@@ -1,10 +1,11 @@
 #include <Arduino.h>
 #include <core_act.h>
 
-// T10 (Act): Vector_Field() near goals (ultrasonic part returns 0 until R03).
-// After START the robot drives at DRIVE_SPEED; each START press turns the direction by 90 deg.
-// Pass: slows near each goal and does not enter the penalty area
-#define DRIVE_SPEED 40.0f
+// T10 (Act): Vector_Field() keeps the robot out of OUR OWN penalty area while chasing.
+// Put the ball next to / behind our penalty area and let the robot chase it.
+// START press toggles the field ON / OFF so you can compare (OFF: robot cuts through the area).
+// Pass (field ON): robot slides along the penalty area edge and never crosses it,
+//                  back goal distance never drops below PENALTY_R_CM
 
 void setup() {
   core_act_init();
@@ -14,24 +15,25 @@ void setup() {
 }
 
 void loop() {
-  static float driveDir = 90;
-  if (start_pressed()) driveDir = fmodf(driveDir + 90, 360);
+  static bool fieldOn = true;
+  static float minDist = 9999;
+  if (start_pressed()) { fieldOn = !fieldOn; minDist = 9999; }
 
   update_gyro_sensor();
   read_camera_v2();
   uint8_t got = read_sense();
 
   LineCtl line = back_to_field(got & SENSE_GOT_LINE);
-  Vec2 f = Vector_Field(fieldData, US_Sensor());
-  float vx = DRIVE_SPEED * cosf(driveDir * DEG_TO_RAD) + f.x;
-  float vy = DRIVE_SPEED * sinf(driveDir * DEG_TO_RAD) + f.y;
-  if (line.active) { vx = line.v.x; vy = line.v.y; }
+  Vec2 chase = chase_ball(merge_ball_data(fieldData, irBall), fieldData);
+  Vec2 v = fieldOn ? Vector_Field(chase, fieldData, US_Sensor()) : chase;
+  if (line.active) v = line.v;
   set_target_heading(90);
-  Vector_Motion(vx, vy, 0);
+  Vector_Motion(v.x, v.y, 0);
 
+  if (fieldData.back_goal.seen && fieldData.back_goal.dist < minDist) minDist = fieldData.back_goal.dist;
   EVERY_MS(tp, 100) {
-    Serial.printf("dir %3.0f | front %4u cm | back %4u cm | F (%5.1f, %5.1f) | v (%5.1f, %5.1f)%s\n",
-                  driveDir, fieldData.front_goal.dist, fieldData.back_goal.dist,
-                  f.x, f.y, vx, vy, line.active ? " LINE" : "");
+    Serial.printf("field %s | back goal %3.0f deg %4u cm (min %4.0f) | chase (%5.1f, %5.1f) -> v (%5.1f, %5.1f)%s\n",
+                  fieldOn ? "ON " : "OFF", fieldData.back_goal.angle, fieldData.back_goal.dist, minDist,
+                  chase.x, chase.y, v.x, v.y, line.active ? " LINE" : "");
   }
 }

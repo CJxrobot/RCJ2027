@@ -6,11 +6,11 @@
 //   update_gyro / read camera / read sense / kicker_update
 //   if line:  v = back_to_field()                        (highest priority)
 //   else:
-//     if ball held: kick, target heading = rotate(field)  else hold 90
+//     if ball held: kick; on a kick turn toward the front goal for KICK_ROTATE_MS, else hold 90
 //     every US_PERIOD_MS: us = US_Sensor()               (reserved R03)
 //     ball = merge_ball_data(camera ball, IR ball)
 //     v  = chase_ball(ball)
-//     v += Vector_Field(field, us)
+//     v  = Vector_Field(v, field, us)                    (keep out of our own penalty area)
 //   Vector_Motion(v)
 //
 // OLED is drawn only before START (a redraw takes ~25 ms).
@@ -66,22 +66,14 @@ void loop() {
     v = line.v;
     set_target_heading(90);
   } else {
-    if (has_ball()) {
-      const FieldObj& g = fieldData.front_goal;
-      bool aimed = !g.seen || fabsf(wrap180(g.angle - 90)) <= KICK_ALIGN_DEG;
-      if (aimed) kicker_fire();
-      set_target_heading(rotate(fieldData));
-    } else {
-      set_target_heading(90);
-    }
+    bool kicked = has_ball() && kicker_fire();
+    set_target_heading(kick_rotate(kicked, fieldData));
 
     if (millis() - lastUs >= US_PERIOD_MS) { lastUs = millis(); us = US_Sensor(); }
 
     MergedBall ball = merge_ball_data(fieldData, irBall);
     v = chase_ball(ball, fieldData);
-    Vec2 f = Vector_Field(fieldData, us);
-    v.x += f.x;
-    v.y += f.y;
+    v = Vector_Field(v, fieldData, us);
   }
   Vector_Motion(v.x, v.y, 0);
 }
