@@ -2,7 +2,7 @@
 #include <core_act.h>
 
 // T06 (Act): main loop speed with every input read and the strategy math running.
-// Sense runs test_sense_tx, Cam runs cam_fake_v2.py. Motors never move. OLED not drawn.
+// Sense runs test_sense_tx, Cam runs main.py (or camera_test/cam_fake_v2.py). Motors never move. OLED not drawn.
 // Pass: >= 1000 loops/s, worst loop < 2000 us
 
 void setup() {

@@ -2,8 +2,8 @@
 #include <core_act.h>
 
 // T04 (Act): /field_data v2 over Serial3 DMA.
-// Maix Cam runs cam_fake_v2.py (later the real camera code, R01). Motors never move.
-// Pass: ~200 pkts/s with goal_ball_detection.py (~100 with cam_fake_v2.py), lost 0, bad 0
+// Maix Cam runs main.py (or camera_test/cam_fake_v2.py for fake data). Motors never move.
+// Pass: >100 pkts/s (main.py measured ~120), lost and bad not increasing
 //       ball front/right/back/left -> about 90 / 0 / 270 / 180 deg
 
 static void printObj(const char* name, const FieldObj& o, const char* unit) {
