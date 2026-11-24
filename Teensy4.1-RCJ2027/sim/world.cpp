@@ -132,6 +132,8 @@ std::vector<Scenario> scenarios = {
    0, -93, 90, 6, {{0, 0, -45, true}, {3.25f, 0, -45, true}, {3.7f, -74, -40, true}}},
   {"defend_fast_side", "Ball jumps far right: robot slides fast toward the end of the penalty line, slows by camera angle",
    -20, -93, 90, 3, {{0, -30, -50, true}, {1.0f, -30, -50, true}, {1.05f, 65, -82, true}}},
+  {"neutral_spot_corner", "Robot pushed to the right corner, ball still on the right neutral spot (40, -64.5): must go and touch it",
+   27, -91, 90, 8, {{0, 40, -64.5f, true}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };
