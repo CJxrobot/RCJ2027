@@ -65,8 +65,9 @@
 // ----- RETURN -----
 #define RETURN_SPEED     50.0f
 #define RETURN_SIDE_DEG  30.0f // our goal within 0 / 180 +- this (robot beside the goal): go forward first
+#define RETURN_SIDE_HYST 10.0f // ... until the goal is more than RETURN_SIDE_DEG + this away from 0 / 180
 #define DODGE_DEG        30.0f // ball within this of the goal direction: go around it
-#define DODGE_OFFSET_DEG 60.0f // ... by turning the path this much away from the ball
+#define DODGE_OFFSET_DEG 60.0f // ... by turning the path this much, on the field side (toward 90)
 #define DEFEND_MAX_CM    45.0f // DEFEND: our goal farther than this = pushed out of the area -> RETURN
                                // (defending spots 16-33 cm, far corner of the area ~46 cm)
 // Penalty area from the field spec (cm, from the goal centre on the goal line, line centres)
@@ -117,6 +118,9 @@ static bool defSettled = false;    // standing on the ball - goal line (no sidew
 // LEAVE only: back sensors saw the line = robot has crossed out of the area
 static bool leaveOut = false;
 
+// RETURN only: robot beside our goal, going forward first (kept until clearly past, no flicker)
+static bool returnBeside = false;
+
 // Side line: in sees it -> back off, only mid -> stop there, none -> free (no memory, no timer)
 static float sideLimit(const Side& s, uint32_t state) {
   bool mid = seen(state, s.mid), in = seen(state, s.in);
@@ -160,6 +164,7 @@ static void go(DefState s, const char* reason) {
   defLastMove = 0;                             // DEFEND starts fresh (no old motion)
   defPrevOut = false;
   leaveOut = false;
+  returnBeside = false;
   if (s == RETURN) linePos = LP_UNKNOWN;       // old line memory may be wrong (pushed): find it again
   why = reason;
   Serial.printf("%lu ms: -> %s (%s)\n", millis(), stateName[s], reason);
@@ -456,14 +461,21 @@ void loop() {
       // which moves forward. Opposite of the DEFEND check (areaDist > 0): no flipping.
       if (areaDist(goal) < -3.0f && goal.dist <= DEFEND_MAX_CM) { go(DEFEND, "camera: inside the area"); break; }
 
+      // Beside our goal (goal near 0 / 180): forward first, then to the goal.
+      // Hysteresis: starts inside RETURN_SIDE_DEG, ends past RETURN_SIDE_DEG + RETURN_SIDE_HYST
+      float sideOff = min(fabsf(wrap180(goal.angle)), fabsf(wrap180(goal.angle - 180.0f)));
+      if (sideOff < RETURN_SIDE_DEG) returnBeside = true;
+      else if (sideOff > RETURN_SIDE_DEG + RETURN_SIDE_HYST) returnBeside = false;
+
       float dir = goal.angle;
-      bool besideGoal = fabsf(wrap180(goal.angle)) < RETURN_SIDE_DEG ||
-                        fabsf(wrap180(goal.angle - 180.0f)) < RETURN_SIDE_DEG;
-      if (besideGoal) {
-        dir = 90.0f;                                           // beside our goal: forward first,
-      } else if (ball.src != SRC_NONE) {                       // then to the goal; ball in the way: go around
-        float d = wrap180(ball.angle - dir);
-        if (fabsf(d) < DODGE_DEG) dir += d > 0 ? -DODGE_OFFSET_DEG : DODGE_OFFSET_DEG;
+      if (returnBeside) {
+        dir = 90.0f;
+      } else if (ball.src != SRC_NONE) {                       // ball in the way: go around it,
+        float d = wrap180(ball.angle - dir);                   // always on the field side (toward
+        if (fabsf(d) < DODGE_DEG) {                            // 90), never toward our wall
+          float a = dir + DODGE_OFFSET_DEG, b = dir - DODGE_OFFSET_DEG;
+          dir = fabsf(wrap180(a - 90.0f)) < fabsf(wrap180(b - 90.0f)) ? a : b;
+        }
       }
       // Coming in: a back sensor or the ring is on a line -> slow, so it stops on the line
       // and does not slide fully into the area (rules 2.6 / 2.8)

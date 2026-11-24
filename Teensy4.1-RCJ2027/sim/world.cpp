@@ -126,6 +126,8 @@ std::vector<Scenario> scenarios = {
    -37, -96, 90, 4, {{0, -20, -40, true}}},
   {"on_side_line_noball", "Same spot, no ball",
    -37, -96, 90, 4, {{0, 0, 0, false}}},
+  {"return_ball_in_way", "RETURN from the left, goal at ~330 (beside), ball between robot and goal at ~353",
+   -72, -68, 90, 5, {{0, -30, -73, true}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };
