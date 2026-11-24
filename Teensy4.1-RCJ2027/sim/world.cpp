@@ -134,6 +134,10 @@ std::vector<Scenario> scenarios = {
    -20, -93, 90, 3, {{0, -30, -50, true}, {1.0f, -30, -50, true}, {1.05f, 65, -82, true}}},
   {"neutral_spot_corner", "Robot pushed to the right corner, ball still on the right neutral spot (40, -64.5): must go and touch it",
    27, -91, 90, 8, {{0, 40, -64.5f, true}}},
+  {"orbit_right", "LEAVE for a ball in front; when the robot is out, the ball jumps to its right (35, -35): slow orbit, ball to 90, kick",
+   0, -93, 90, 8, {{0, 0, -45, true}, {3.45f, 0, -45, true}, {3.5f, 35, -35, true}}},
+  {"orbit_behind", "Same, but the ball jumps behind-left of the robot (-25, -62) once it is out: orbit around it, never back into the area",
+   0, -93, 90, 8, {{0, 0, -40, true}, {3.45f, 0, -40, true}, {3.5f, -25, -62, true}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };
