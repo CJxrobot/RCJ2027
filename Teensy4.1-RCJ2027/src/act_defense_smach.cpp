@@ -4,7 +4,7 @@
 // T12 (Act): defense robot as a state machine
 // Ball: final_ball_data = IR only for now; switch the commented line to use camera + IR.
 //
-//   DEFEND  stay on the penalty line (same line logic as act_defense)
+//   DEFEND  stay BEHIND the penalty line: line kept between F_in and F_out (front sensors)
 //           ball seen:    move sideways to keep the ball straight ahead
 //           no ball:      move sideways until the back goal is at 270 (in front of our goal)
 //           ball within 90 +- LEAVE_FRONT_DEG for LEAVE_HOLD_MS without a break  -> LEAVE
@@ -15,7 +15,7 @@
 //           (and, once US_Sensor() is filled, a side ultrasonic < LINE_SIDE_US_CM)
 //           ball lost / ball behind / too far from our goal / LEAVE_MAX_MS over  -> RETURN
 //   RETURN  drive toward our goal, go around the ball if it is in the way,
-//           line handling on; penalty line reached (line flag)                   -> DEFEND
+//           line handling on; a FRONT sensor sees the line (robot behind it)    -> DEFEND
 //
 // Before START the OLED shows live data. Lift the robot: motors stop.
 
@@ -61,6 +61,24 @@ Side leftSide  = {M2(1),  M2(0),  false, 0};
 
 static bool seen(uint32_t state, uint32_t mask) { return (~state & mask) != 0; }
 
+// Where the penalty line is, remembered from the last mux 2 sensor that saw it.
+// Goal: the line stays between F_in and F_out, so the robot is always behind it.
+//   LP_NEAR    F_in saw it last:  line just ahead, or it has passed F_in (robot crossing) -> back
+//   LP_FAR     F_out saw it last: line ahead out of reach (robot too deep)               -> forward
+//   LP_BEHIND  B saw it last:     robot is outside, the line is behind it                -> back
+enum LinePos : uint8_t { LP_UNKNOWN, LP_NEAR, LP_FAR, LP_BEHIND };
+static LinePos linePos = LP_UNKNOWN;
+
+static void updateLinePos(uint32_t state) {
+  bool in = seen(state, FRONT_IN), out = seen(state, FRONT_OUT), back = seen(state, BACK);
+  if (in && !out)           linePos = LP_NEAR;
+  else if (out && !in)      linePos = LP_FAR;
+  else if (back && !in && !out) linePos = LP_BEHIND;
+  // in && out: line between them = right place, keep the last value
+}
+
+static bool behindLine() { return linePos == LP_NEAR || linePos == LP_FAR; }
+
 static float sideLimit(Side& s, uint32_t state) {
   bool mid = seen(state, s.mid), in = seen(state, s.in);
   if (mid || in) s.lastSeen = millis();
@@ -104,10 +122,24 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
   Vec2 v;
   if (back == 2) return v;                           // vertical line behind: stop
 
+  // Left AND right side sensors see a line: it is the front line under the robot, not the
+  // side lines (a side line only reaches one side). Robot is over the line: straight back.
+  bool leftSeen  = seen(state, leftSide.mid | leftSide.in);
+  bool rightSeen = seen(state, rightSide.mid | rightSide.in);
+  if (leftSeen && rightSeen) {
+    leftSide.backing = rightSide.backing = false;
+    linePos = LP_NEAR;
+    v.y = -SPEED;
+    return v;
+  }
+
+  // Forward / back: keep the penalty line between F_in and F_out (always behind the line)
   bool in = seen(state, FRONT_IN), out = seen(state, FRONT_OUT);
-  if (in && !out)      v.y = -SPEED;
-  else if (out && !in) v.y =  SPEED;
-  else if (back > 0)   v.y = -SPEED;
+  if (in && out)       v.y = 0;                      // line between them: right place
+  else if (in)         v.y = -SPEED;                 // line close: back off
+  else if (out)        v.y =  SPEED;                 // line a bit far: come forward
+  else if (linePos == LP_NEAR || linePos == LP_BEHIND) v.y = -SPEED;  // crossed it: go back
+  else if (linePos == LP_FAR) v.y = SPEED;           // too deep: come forward
   bool atSide = seen(state, rightSide.mid | rightSide.in | leftSide.mid | leftSide.in) ||
                 rightSide.backing || leftSide.backing;
   if (atSide) v.y = max(v.y, 0.0f);
@@ -214,6 +246,7 @@ void loop() {
 
   uint32_t now = millis();
   uint32_t state = line_flag() ? lineData.state : 0xFFFFFFFF;
+  updateLinePos(state);                // every state: remember where the penalty line is
   MergedBall final_ball_data = ir_ball_data(irBall);
   //MergedBall final_ball_data = merge_ball_data(fieldData, irBall);
   MergedBall& ball = final_ball_data;
@@ -262,7 +295,9 @@ void loop() {
     }
 
     case RETURN: {
-      if (line_flag())                 { go(DEFEND, "penalty line"); break; }
+      // Done only when a FRONT sensor sees the line (line ahead = robot behind it).
+      // Still behind it (never crossed): done at once.
+      if (behindLine())                { go(DEFEND, "behind the line"); break; }
       if (now - stStart > RETURN_MAX_MS) { go(DEFEND, "return timeout"); break; }
 
       float dir = backGoalOk() ? fieldData.back_goal.angle : 270.0f;
