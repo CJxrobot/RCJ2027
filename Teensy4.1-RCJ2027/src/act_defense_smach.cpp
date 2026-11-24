@@ -7,7 +7,7 @@
 //   DEFEND  stay BEHIND the penalty line: line kept between F_in and F_out (front sensors)
 //           ball seen:    move sideways to keep the ball straight ahead
 //           no ball:      move sideways until the back goal is at 270 (in front of our goal)
-//           ball within 90 +- LEAVE_FRONT_DEG for LEAVE_HOLD_MS without a break  -> LEAVE
+//           ball within 90 +- LEAVE_FRONT_DEG for LEAVE_HOLD_MS (breaks < LEAVE_BREAK_MS ignored) -> LEAVE
 //   LEAVE   leave the penalty area and take the ball
 //           ball held:    shoot_control() (same as the attack robot)
 //           ball 85-95:   rush straight at it, else chase_ball()
@@ -32,7 +32,8 @@
 
 // ----- DEFEND -> LEAVE -----
 #define LEAVE_FRONT_DEG  5.0f  // ball within 90 +- this counts as "straight ahead" (85-95)
-#define LEAVE_HOLD_MS    3000  // ... for this long without a break
+#define LEAVE_HOLD_MS    3000  // ... for this long
+#define LEAVE_BREAK_MS   200   // ball out of the window shorter than this (noise): timer keeps running
 
 // ----- LEAVE -----
 #define LEAVE_RUSH_SPEED 70.0f // ball 85-95: straight at it
@@ -42,6 +43,8 @@
 #define BEHIND_DEG       60.0f // ball within 270 +- this: behind the robot, return
 #define LINE_SIDE_GOAL_DEG 45.0f // back goal more than this off 270: line handling on
 #define LINE_SIDE_US_CM  20.0f // ... and a side ultrasonic closer than this (R03)
+#define PENALTY_ZONE_CM  60.0f // our goal closer than this: any line is the penalty line, ignore it
+                               // (penalty area reaches ~46 cm from the goal, field side lines >= 78 cm)
 
 // ----- RETURN -----
 #define RETURN_SPEED     50.0f
@@ -93,7 +96,7 @@ static float sideLimit(Side& s, uint32_t state) {
 enum DefState : uint8_t { DEFEND, LEAVE, RETURN };
 static const char* stateName[] = {"DEFEND", "LEAVE", "RETURN"};
 static DefState st = DEFEND;
-static uint32_t stStart = 0, frontStart = 0, lastBallSeen = 0;
+static uint32_t stStart = 0, frontStart = 0, frontLastIn = 0, lastBallSeen = 0;
 static bool frontTiming = false;
 static const char* why = "";
 
@@ -159,6 +162,7 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
 // LEAVE: line handling only near the side of the field
 static bool leaveLineOn(const UsData& us) {
   if (!backGoalOk()) return true;                    // no goal: stay safe
+  if (fieldData.back_goal.dist < PENALTY_ZONE_CM) return false;   // only the penalty line here: go out
   bool sideGoal = fabsf(wrap180(fieldData.back_goal.angle - 270.0f)) > LINE_SIDE_GOAL_DEG;
   bool usFitted = us.left > 0 || us.right > 0;       // R03 not in yet: goal angle only
   if (!usFitted) return sideGoal;
@@ -260,8 +264,12 @@ void loop() {
   switch (st) {
     case DEFEND: {
       bool front = ball.src != SRC_NONE && fabsf(wrap180(ball.angle - 90.0f)) <= LEAVE_FRONT_DEG;
-      if (!front) frontTiming = false;
-      else if (!frontTiming) { frontTiming = true; frontStart = now; }
+      if (front) {
+        if (!frontTiming) { frontTiming = true; frontStart = now; }
+        frontLastIn = now;
+      } else if (frontTiming && now - frontLastIn > LEAVE_BREAK_MS) {
+        frontTiming = false;                       // out of the window too long: start again
+      }
       if (frontTiming && now - frontStart >= LEAVE_HOLD_MS) { go(LEAVE, "ball in front 3 s"); break; }
       v = defendMotion(state, ball);
       break;

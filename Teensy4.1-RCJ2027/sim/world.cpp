@@ -87,6 +87,10 @@ std::vector<Scenario> scenarios = {
    0, -93, 90, 14, {{0, -60, -45, true}, {3, 60, -45, true}, {6, -60, -45, true}, {9, 60, -45, true}, {12, -60, -45, true}}},
   {"no_ball", "No ball, robot starts 25 cm right: it should centre on the goal (camera)",
    25, -93, 90, 6, {{0, 0, 0, false}}},
+  {"corner_right", "Robot at the right corner, ball still straight in front of it: should LEAVE after 3 s",
+   30, -93, 90, 10, {{0, 30, -45, true}}},
+  {"corner_left", "Robot at the left corner, ball still straight in front of it: should LEAVE after 3 s",
+   -30, -93, 90, 10, {{0, -30, -45, true}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };
