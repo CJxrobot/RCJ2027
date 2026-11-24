@@ -104,6 +104,10 @@ std::vector<Scenario> scenarios = {
    0, -93, 90, 8, {{0, 75, -70, true}}},
   {"pushed_out", "Ball far right; at 2 s an opponent pushes the robot 60 cm out: RETURN, back behind the line",
    0, -93, 90, 7, {{0, 75, -70, true}}, -1, -1, 2.0f, 0, -33},
+  {"outside_front", "Robot starts just in front of the penalty line (back sensors on it): RETURN by camera",
+   10, -74, 90, 4, {{0, 0, 0, false}}},
+  {"beside_goal", "Robot beside our goal, outside the area: forward first, then into the area (not along the goal line)",
+   58, -102, 90, 5, {{0, 0, 0, false}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };
