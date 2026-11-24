@@ -34,7 +34,7 @@ const float WHEEL_R = 9.0f;                     // wheel distance from the centr
 const float MOTOR_TAU = 0.05f;                  // motor reaches 63 % of a step in 50 ms (guess)
 
 // Line sensors in the robot frame (angle: 0 = right, 90 = front; radius cm)
-// mux 1: ring of 32 sensors on a 15 cm circle, 2 sensors per channel.
+// mux 1: ring of 32 sensors, radius 6.1175 cm, 2 sensors per channel.
 //        Channel ch = the pair at ch*22.5 +- 5.625 deg (sees the line if either sensor does).
 // mux 2 (defense): front F_in inside the ring, F_out outside it;
 //        0 / 180 / 270 arms: in and mid used (out sensor not used, not modelled).
@@ -42,12 +42,12 @@ struct LineSensor { int bit; float deg, r; };
 std::vector<LineSensor> lineSensors() {
   std::vector<LineSensor> s;
   for (int ch = 0; ch < 16; ch++) {
-    s.push_back({ch, ch * 22.5f - 5.625f, 7.5f});
-    s.push_back({ch, ch * 22.5f + 5.625f, 7.5f});
+    s.push_back({ch, ch * 22.5f - 5.625f, 6.1175f});
+    s.push_back({ch, ch * 22.5f + 5.625f, 6.1175f});
   }
 #if SIM_MUX2
-  s.push_back({16 + 7,  90, 5.5f});   // F_in  (inside the ring)
-  s.push_back({16 + 11, 90, 9.5f});   // F_out (outside the ring)
+  s.push_back({16 + 7,  90, 4.3608f}); // F_in  (inside the ring)
+  s.push_back({16 + 11, 90, 8.0f});    // F_out (outside the ring)
   s.push_back({16 + 3, 270, 8.5f});   // B_in
   s.push_back({16 + 4, 270, 9.5f});   // B_mid
   s.push_back({16 + 0, 180, 8.5f});   // L_in
@@ -112,6 +112,14 @@ std::vector<Scenario> scenarios = {
    0, -93, 90, 8, {{0, 40, -64.5f, true}}},
   {"restart_corner", "Put back after out of bounds: own corner, facing our goal (rule 2.8): turn, then return, no wall",
    -60, -100, 270, 5, {{0, 0, 0, false}}},
+  {"shot_right", "Ball still front right (40, -30), at 2 s shot at the far post (-27): blocked?",
+   0, -92, 90, 4, {{0, 40, -30, true}, {2.0f, 40, -30, true}, {2.6f, -27, -113, true}}},
+  {"shot_left", "Ball still front left (-40, -30), at 2 s shot at the far post (27): blocked?",
+   0, -92, 90, 4, {{0, -40, -30, true}, {2.0f, -40, -30, true}, {2.6f, 27, -113, true}}},
+  {"shot_low_right", "Ball low on the right (65, -70), at 2 s shot at the far post (-27): blocked?",
+   0, -92, 90, 4, {{0, 65, -70, true}, {2.0f, 65, -70, true}, {2.6f, -27, -113, true}}},
+  {"shot_center", "Ball in the middle (0, -20), at 2 s shot at a corner (25): blocked?",
+   0, -92, 90, 4, {{0, 0, -20, true}, {2.0f, 0, -20, true}, {2.6f, 25, -113, true}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };
@@ -281,9 +289,11 @@ bool ballHeld() {
 
 // Ball follows the scenario keys until the robot touches it, then rolls freely.
 // A key with visible = false always applies (the ball is taken away).
+bool ballScored = false;                          // after a goal the ball stays off the field
+
 void scriptBall(float t) {
   const std::vector<Key>& k = sc->ball;
-  if (k.empty()) return;                          // live mode: the mouse moves the ball
+  if (k.empty() || ballScored) return;            // live mode: the mouse moves the ball
   size_t i = 0;
   while (i + 1 < k.size() && k[i + 1].t <= t) i++;
   if (!k[i].visible) { ball.visible = false; ball.x = 999; ball.y = 999; return; }
@@ -316,6 +326,7 @@ void moveBall(float dt) {
   // Goal: ball over a goal line between the posts
   if (fabsf(ball.y) > LINE_Y + 1 && fabsf(ball.x) < GOAL_HALF) {
     simLog(ball.y > 0 ? "GOAL (opponent goal)" : "OWN GOAL");
+    if (!sc->ball.empty()) ballScored = true;
     ball.visible = false;
     ball.x = ball.y = 999;
     return;
