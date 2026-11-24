@@ -148,6 +148,30 @@ std::vector<Scenario> scenarios = {
    0, -93, 90, 8, {{0, 0, -40, true}, {3.45f, 0, -40, true}, {3.5f, -25, -62, true}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
+  // ===== Attack robot (act_attack*, "all" runs only these): our goal at y < 0, attacks y > 0 =====
+  {"atk_kickoff", "Kick-off: ball on the centre spot in front of the robot -> push it into the goal",
+   0, -30, 90, 6, {{0, 0, 0, true}}},
+  {"atk_ball_behind", "Ball right behind the robot: go around it, then push",
+   0, 0, 90, 8, {{0, 0, -25, true}}},
+  {"atk_ball_side", "Ball to the right front",
+   0, -20, 90, 8, {{0, 40, 10, true}}},
+  {"atk_ball_left_back", "Ball left behind",
+   20, 20, 90, 8, {{0, -30, -10, true}}},
+  {"atk_ball_wall", "Ball next to the right side line: must not go out",
+   0, 0, 90, 8, {{0, 72, 30, true}}},
+  {"atk_ball_corner", "Ball in the opponent's right corner",
+   0, 20, 90, 8, {{0, 68, 98, true}}},
+  {"atk_ball_our_area", "Ball in front of our penalty area: robot must not go fully inside",
+   0, 0, 90, 8, {{0, 5, -78, true}}},
+  {"atk_ball_their_area", "Ball in the opponent penalty area: robot must not go fully inside",
+   20, 20, 90, 8, {{0, 0, 92, true}}},
+  {"atk_no_ball", "No ball: library goes home (toward our goal)",
+   30, 40, 90, 5, {}},
+  {"atk_kickoff_us_front_dead", "Kick-off, front ultrasonic broken: x 0.7 forward unless the ball is there",
+   0, -30, 90, 6, {{0, 0, 0, true}}, -1, -1, -1, 0, 0, 1},
+  {"atk_ball_wall_us_right_dead", "Ball at the right side line, right ultrasonic broken",
+   0, 0, 90, 8, {{0, 72, 30, true}}, -1, -1, -1, 0, 0, 2},
+
   // Ultrasonic (R03): US bits 1 front, 2 right, 4 back, 8 left = sensor reads nothing
   {"pushed_back", "Opponent pushes the robot back into the area (40 cm/s, 1.5-2.5 s): forward recovery, never fully inside",
    0, -91, 90, 4, {{0, 20, -40, true}}, -1, -1, -1, 0, 0, 0, 1.5f, 2.5f, 0, -40},
@@ -475,13 +499,17 @@ float areaDist(float x, float y) {
 }
 
 void ruleCheck() {
-  static bool wasInside = false, wasWall = false;
+  static bool wasInside = false, wasWall = false, wasOut = false;
   bool inside = areaDist(bot.x, bot.y) <= -ROBOT_R;
   bool wall = fabsf(bot.x) >= WALL_X - ROBOT_R - 0.05f || fabsf(bot.y) >= WALL_Y - ROBOT_R - 0.05f;
+  // whole robot past the outer edge of the white line (line 2 cm wide)
+  bool out = fabsf(bot.x) - ROBOT_R >= LINE_X + 1.0f || fabsf(bot.y) - ROBOT_R >= LINE_Y + 1.0f;
   if (inside && !wasInside) simLog("RULE: robot FULLY inside the penalty area (out of bounds, 2.6 / 2.8)");
   if (wall && !wasWall)     simLog("RULE: robot touches a wall (out of bounds, 2.8)");
+  if (out && !wasOut)       simLog("RULE: robot fully outside the white line (out of bounds)");
   wasInside = inside;
   wasWall = wall;
+  wasOut = out;
 }
 
 void record() {
@@ -654,9 +682,11 @@ std::string liveHandle(const std::string& path, std::string& type) {
 // Each scenario runs in its own process (the robot program keeps static state).
 int main(int argc, char** argv) {
   const char* want = argc > 1 ? argv[1] : "all";
-  if (!strcmp(want, "all")) {
+  if (!strcmp(want, "all")) {                    // attack programs: atk_* scenarios, others: the rest
     int fails = 0;
+    bool atk = strstr(SIM_PROG, "attack") != nullptr;
     for (const Scenario& s : scenarios) {
+      if ((strncmp(s.name, "atk_", 4) == 0) != atk) continue;
       std::string cmd = std::string("\"") + argv[0] + "\" " + s.name;
       fails += system(cmd.c_str()) != 0;
     }
