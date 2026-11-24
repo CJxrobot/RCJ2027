@@ -7,7 +7,7 @@
 // Rules 2.6 / 2.8: never FULLY inside our penalty area (the line is part of the area).
 //
 //   DEFEND  back sensor on a line (robot outside the area)                       -> RETURN
-//           F_out kept on the penalty line (front of the robot always past the line)
+//           front ring sensor (ch 4) kept on the penalty line (front of the robot past the line)
 //           ball seen:    move sideways onto the ball - goal centre line (ball and goal 180 apart)
 //           no ball:      move sideways until the back goal is at 270 (in front of our goal)
 //           LEAVE_HOLD_MS (breaks < LEAVE_BREAK_MS ignored) of:
@@ -34,7 +34,7 @@
 // ----- DEFEND: penalty line -----
 #define SPEED       30  // forward / backward on the penalty line
 #define BACK_SPEED  15  // backing off from a side line
-#define FINE_SPEED  15  // small forward / back correction around the F_out stop point
+#define FINE_SPEED  15  // small forward / back correction around the ring stop point
 #define DEF_SLOW_GOAL_DEG 45.0f // camera: back goal more than this off 270 -> sideways move away from it slows ...
 #define DEF_SIDE_GOAL_DEG 65.0f // ... down to 0 here (end of the penalty line)
 
@@ -76,7 +76,7 @@
 #define PA_HALF_CM       39.0f // side lines
 #define PA_R_CM          15.0f // rounded front corners
 #define DEPTH_FLOOR_CM   9.5f  // camera: robot centre deeper than this behind the front line -> forward first
-                               // (normal spot ~8 cm, fully inside from 10 cm: front 11 cm vs line 1 cm)
+                               // (normal spot ~6 cm, fully inside from 10 cm: front 11 cm vs line 1 cm)
 // Field side lines (LEAVE / RETURN): robot x from the camera goal ANGLES (both goals + gyro),
 // speed toward a side line cut exponentially (same law as the library's walls / goals)
 #define FIELD_HALF_LEN_CM 109.5f // goal (camera point) from the field centre
@@ -103,23 +103,24 @@ static bool seen(uint32_t state, uint32_t mask) { return (~state & mask) != 0; }
 
 // Rules 2.6 / 2.8: the robot must never be FULLY inside the penalty area (the line is part of
 // the area). Front sensors from the centre: F_in 4.4 cm, ring ch 4 6.1 cm, F_out 8.0 cm.
-// Target: F_out on the line -> centre ~8 cm behind it, front of the robot (11 cm) still 1-3 cm
-// past the outer edge of the line. Ring front or F_in on the line = too far forward.
-//   LP_AT     F_out saw the line last
-//   LP_AHEAD  line ahead of F_out (lost it while backing)       -> forward
-//   LP_OVER   line behind F_out (ring / F_in saw it, robot over) -> back
+// Target: ring ch 4 on the line -> centre ~6 cm behind it, front of the robot (11 cm) about
+// 3-5 cm past the outer edge of the line. F_in on the line = too far forward, F_out only = too deep.
+//   LP_AT     ring saw the line last
+//   LP_AHEAD  line ahead of the ring (F_out saw it, or the ring lost it while backing) -> forward
+//   LP_OVER   line behind the ring (F_in saw it, or the ring lost it moving forward)  -> back
 //   unknown -> forward (never deeper into the area)
 enum LinePos : uint8_t { LP_UNKNOWN, LP_AT, LP_AHEAD, LP_OVER };
 static LinePos linePos = LP_UNKNOWN;
 
 static void updateLinePos(uint32_t state) {
-  if (seen(state, FRONT_IN | RING_FRONT)) linePos = LP_OVER;
-  else if (seen(state, FRONT_OUT))        linePos = LP_AT;
+  if (seen(state, RING_FRONT))     linePos = LP_AT;
+  else if (seen(state, FRONT_IN))  linePos = LP_OVER;
+  else if (seen(state, FRONT_OUT)) linePos = LP_AHEAD;
 }
 
-// DEFEND only: last forward / back move (not 0) and whether F_out saw the line last loop
+// DEFEND only: last forward / back move (not 0) and whether the ring saw the line last loop
 static float defLastMove = 0;
-static bool defPrevOut = false;
+static bool defPrevRing = false;
 static bool defBlocked = false;    // sideways move toward the ball stopped by a side line / camera guard
 static bool defSettled = false;    // standing on the ball - goal line (no sideways move needed)
 
@@ -170,7 +171,7 @@ static void go(DefState s, const char* reason) {
   stStart = millis();
   frontTiming = false;
   defLastMove = 0;                             // DEFEND starts fresh (no old motion)
-  defPrevOut = false;
+  defPrevRing = false;
   leaveOut = false;
   returnBeside = false;
   if (s == RETURN) linePos = LP_UNKNOWN;       // old line memory may be wrong (pushed): find it again
@@ -224,14 +225,14 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
     return v;
   }
 
-  // Forward / back: F_out on the line (robot partly outside the area, rules 2.6 / 2.8)
-  bool out = seen(state, FRONT_OUT), inFront = seen(state, FRONT_IN), ring = seen(state, RING_FRONT);
-  if (!out && defPrevOut && !inFront && !ring)                      // F_out just lost it
+  // Forward / back: front ring sensor on the line (robot partly outside the area, rules 2.6 / 2.8)
+  bool ring = seen(state, RING_FRONT), inFront = seen(state, FRONT_IN), out = seen(state, FRONT_OUT);
+  if (!ring && defPrevRing && !inFront && !out)                     // ring just lost it
     linePos = defLastMove < 0 ? LP_AHEAD : LP_OVER;
-  defPrevOut = out;
-  if (inFront)                   v.y = -FINE_SPEED;  // further over the line: back
-  else if (ring)                 v.y = -FINE_SPEED;  // a bit too far forward: back a little
-  else if (out)                  v.y = 0;            // right place
+  defPrevRing = ring;
+  if (ring)                      v.y = 0;            // right place
+  else if (inFront)              v.y = -FINE_SPEED;  // too far forward: back a little
+  else if (out)                  v.y = FINE_SPEED;   // too deep: forward a little
   else if (linePos == LP_OVER)   v.y = -FINE_SPEED;  // passed over it: back a little
   else if (linePos == LP_AHEAD)  v.y = FINE_SPEED;   // a bit deep: forward a little
   else if (linePos == LP_AT)     v.y = -FINE_SPEED;  // (memory from another state: back)
