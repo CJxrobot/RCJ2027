@@ -17,7 +17,9 @@
 //   RETURN  drive toward our goal, go around the ball if it is in the way,
 //           a FRONT sensor sees the line (robot behind it), or
 //           camera: our goal closer than RETURN_DONE_CM (inside the area)        -> DEFEND
-//           no goal on the camera: stop and wait (no timeout, no blind driving)
+//
+// Every loop, before the states: our goal must be known (camera, or ultrasonic later).
+//   unknown -> stop (LEAVE -> RETURN);  DEFEND farther than DEFEND_MAX_CM -> RETURN
 //
 // Before START the OLED shows live data. Lift the robot: motors stop.
 
@@ -52,6 +54,8 @@
 #define RETURN_SPEED     50.0f
 #define DODGE_DEG        30.0f // ball within this of the goal direction: go around it
 #define DODGE_OFFSET_DEG 60.0f // ... by turning the path this much away from the ball
+#define DEFEND_MAX_CM    45.0f // DEFEND: our goal farther than this = pushed out of the area -> RETURN
+                               // (defending spots 16-33 cm, far corner of the area ~46 cm)
 #define RETURN_DONE_CM   20.0f // camera: back goal closer than this = inside the penalty area, done
                                // (front penalty line is 24 cm from the goal line)
                                // no goal on the camera: RETURN stops and waits (no blind driving)
@@ -101,6 +105,26 @@ static float sideLimit(Side& s, uint32_t state) {
   return 1000;
 }
 
+// ----- Our goal: checked first every loop, highest priority -----
+// camera sees it -> its angle / distance
+// else ultrasonic fitted (R03, reserved; US_Sensor() returns 0 for now) -> back distance, angle 270
+// else unknown -> robot stops (no blind driving), LEAVE -> RETURN
+struct OurGoal { bool known; float angle, dist; };
+
+static bool backGoalOk();
+static OurGoal ourGoal(const UsData& us) {
+  OurGoal g = {false, 270.0f, 0.0f};
+  if (backGoalOk()) {
+    g.known = true;
+    g.angle = fieldData.back_goal.angle;
+    g.dist = fieldData.back_goal.dist;
+  } else if (us.back > 0) {
+    g.known = true;
+    g.dist = us.back;
+  }
+  return g;
+}
+
 enum DefState : uint8_t { DEFEND, LEAVE, RETURN };
 static const char* stateName[] = {"DEFEND", "LEAVE", "RETURN"};
 static DefState st = DEFEND;
@@ -114,6 +138,7 @@ static void go(DefState s, const char* reason) {
   frontTiming = false;
   defLastVy = 0;                               // DEFEND starts fresh (no old motion)
   defPrevIn = defPrevOut = false;
+  if (s == RETURN) linePos = LP_UNKNOWN;       // old line memory may be wrong (pushed): find it again
   why = reason;
   Serial.printf("%lu ms: -> %s (%s)\n", millis(), stateName[s], reason);
 }
@@ -286,6 +311,18 @@ void loop() {
   set_target_heading(90);
   set_ramp(st != DEFEND);            // DEFEND line following reacts at once; LEAVE / RETURN ramp
 
+  // Highest priority, every state: where is our goal?
+  OurGoal goal = ourGoal(us);
+  if (!goal.known) {
+    if (st == LEAVE) go(RETURN, "goal unknown");
+    frontTiming = false;                            // no LEAVE while the goal is unknown
+    set_ramp(false);
+    Vector_Motion(0, 0, 0);                         // stop, hold heading 90
+    EVERY_MS(tu, 200) Serial.printf("%-6s (%s) | goal unknown: stopped\n", stateName[st], why);
+    return;
+  }
+  if (st == DEFEND && goal.dist > DEFEND_MAX_CM) go(RETURN, "pushed out");
+
   switch (st) {
     case DEFEND: {
       bool front = ball.src != SRC_NONE && fabsf(wrap180(ball.angle - 90.0f)) <= LEAVE_FRONT_DEG;
@@ -306,7 +343,7 @@ void loop() {
         if (ball.src != SRC_NONE && fabsf(wrap180(ball.angle - 270.0f)) < BEHIND_DEG)
                                                                  { go(RETURN, "ball behind"); break; }
       }
-      if (backGoalOk() && fieldData.back_goal.dist > LEAVE_MAX_DIST_CM) { go(RETURN, "too far"); break; }
+      if (goal.dist > LEAVE_MAX_DIST_CM)                          { go(RETURN, "too far"); break; }
       if (now - stStart > LEAVE_MAX_MS)                          { go(RETURN, "time up"); break; }
 
       ShootCtl shot = shoot_control(fieldData);
@@ -330,15 +367,14 @@ void loop() {
     case RETURN: {
       // Done only when a FRONT sensor sees the line (line ahead = robot behind it).
       // Still behind it (never crossed): done at once.
-      if (behindLine())                { go(DEFEND, "behind the line"); break; }
-      if (!backGoalOk()) break;                                // no goal on the camera: stop, wait
-      if (fieldData.back_goal.dist < RETURN_DONE_CM) {          // inside the area, line is ahead
+      if (behindLine() && goal.dist <= DEFEND_MAX_CM) { go(DEFEND, "behind the line"); break; }
+      if (goal.dist < RETURN_DONE_CM) {                        // inside the area, line is ahead
         go(DEFEND, "camera: at our goal");
         linePos = LP_FAR;                                      // DEFEND comes forward to the line
         break;
       }
 
-      float dir = fieldData.back_goal.angle;
+      float dir = goal.angle;
       if (ball.src != SRC_NONE) {                              // ball in the way: go around it
         float d = wrap180(ball.angle - dir);
         if (fabsf(d) < DODGE_DEG) dir += d > 0 ? -DODGE_OFFSET_DEG : DODGE_OFFSET_DEG;
