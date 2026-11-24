@@ -48,12 +48,15 @@
 #define LEAVE_FRONT_DEG  5.0f  // ball within 90 +- this counts as "straight ahead" (85-95)
 #define LEAVE_HOLD_MS    3000  // ... for this long
 #define LEAVE_BREAK_MS   200   // ball out of the window shorter than this (noise): timer keeps running
-#define LEAVE_SIDE_DEG   50.0f // robot in place (or stopped at the side), ball near, within 90 +- this ...
+#define LEAVE_SIDE_DEG   65.0f // robot in place (or stopped at the side), ball near, within 90 +- this ...
+                               // (65: from the corner the neutral spot is at a wide angle, field test)
 #define BALL_STILL_DEG   8.0f  // ... and not moving (angle within this) for LEAVE_HOLD_MS -> LEAVE
                                // (rule 2.5: must touch the ball on the neutral spot next to the area)
 
 // ----- LEAVE -----
 #define LEAVE_RUSH_SPEED 70.0f // ball 85-95: straight at it
+#define LEAVE_FAR_SPEED  60.0f // LEAVE speed limit with the ball far (IR closeness 0) ...
+#define LEAVE_NEAR_SPEED 30.0f // ... down to this with the ball close (closeness 1): no running over it
 #define LEAVE_MAX_MS     3000  // longest time out of the penalty area
 #define LEAVE_MAX_DIST_CM 90.0f // back goal farther than this: too far, return
 #define BALL_LOST_MS     200   // no ball for this long: return
@@ -510,6 +513,11 @@ void loop() {
       } else {
         v = chase_ball(ball, fieldData);
       }
+      if (!shot.active) {                               // slower the closer the ball (IR closeness)
+        float lim = LEAVE_FAR_SPEED + (LEAVE_NEAR_SPEED - LEAVE_FAR_SPEED) * ball.closeness;
+        float sp = hypotf(v.x, v.y);
+        if (sp > lim) { v.x *= lim / sp; v.y *= lim / sp; }
+      }
 
       if (seen(state, BACK)) leaveOut = true;           // robot has crossed out of the area
       // Close to our goal after leaving: never drive back into the area (rules 2.6 / 2.8).
@@ -581,7 +589,7 @@ void loop() {
   Vector_Motion(v.x, v.y, 0);
 
   EVERY_MS(tp, 200) {
-    Serial.printf("%-6s (%s) | ball %-4s %5.1f | goal %s %5.1f %4u cm -> %3.0f cm | line %d | hold %d | v (%4.0f, %4.0f)\n",
+    Serial.printf("%-6s (%s) | ball %-4s %5.1f | goal %s %5.1f %4u > %3.0f cm | line %d | hold %d | v (%4.0f, %4.0f)\n",
                   stateName[st], why, ball_src_name(ball.src), ball.angle,
                   fieldData.back_goal.seen ? "Y" : "-", fieldData.back_goal.angle, fieldData.back_goal.dist,
                   goal.dist, line_flag(), has_ball(), v.x, v.y);       // raw -> corrected
