@@ -69,7 +69,9 @@ static bool seen(uint32_t state, uint32_t mask) { return (~state & mask) != 0; }
 //   LP_NEAR    F_in saw it last:  line just ahead, or it has passed F_in (robot crossing) -> back
 //   LP_FAR     F_out saw it last: line ahead out of reach (robot too deep)               -> forward
 //   LP_BEHIND  B saw it last:     robot is outside, the line is behind it                -> back
-enum LinePos : uint8_t { LP_UNKNOWN, LP_NEAR, LP_FAR, LP_BEHIND };
+//   LP_BETWEEN line left F_out going forward / F_in going back: it is between them     -> stop
+//              (F_in and F_out are further apart than the line is wide: never both at once)
+enum LinePos : uint8_t { LP_UNKNOWN, LP_NEAR, LP_FAR, LP_BEHIND, LP_BETWEEN };
 static LinePos linePos = LP_UNKNOWN;
 
 static void updateLinePos(uint32_t state) {
@@ -80,7 +82,11 @@ static void updateLinePos(uint32_t state) {
   // in && out: line between them = right place, keep the last value
 }
 
-static bool behindLine() { return linePos == LP_NEAR || linePos == LP_FAR; }
+// DEFEND only: last forward / back command and what the front sensors saw last loop
+static float defLastVy = 0;
+static bool defPrevIn = false, defPrevOut = false;
+
+static bool behindLine() { return linePos == LP_NEAR || linePos == LP_FAR || linePos == LP_BETWEEN; }
 
 static float sideLimit(Side& s, uint32_t state) {
   bool mid = seen(state, s.mid), in = seen(state, s.in);
@@ -104,6 +110,8 @@ static void go(DefState s, const char* reason) {
   st = s;
   stStart = millis();
   frontTiming = false;
+  defLastVy = 0;                               // DEFEND starts fresh (no old motion)
+  defPrevIn = defPrevOut = false;
   why = reason;
   Serial.printf("%lu ms: -> %s (%s)\n", millis(), stateName[s], reason);
 }
@@ -137,12 +145,19 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
   }
 
   // Forward / back: keep the penalty line between F_in and F_out (always behind the line)
+  // The line just left F_out going forward, or F_in going back: it is in the gap between them
   bool in = seen(state, FRONT_IN), out = seen(state, FRONT_OUT);
+  if (!in && !out && ((defPrevOut && defLastVy > 0) || (defPrevIn && defLastVy < 0)))
+    linePos = LP_BETWEEN;
+  defPrevIn = in;
+  defPrevOut = out;
   if (in && out)       v.y = 0;                      // line between them: right place
   else if (in)         v.y = -SPEED;                 // line close: back off
   else if (out)        v.y =  SPEED;                 // line a bit far: come forward
+  else if (linePos == LP_BETWEEN) v.y = 0;           // line between F_in and F_out: right place
   else if (linePos == LP_NEAR || linePos == LP_BEHIND) v.y = -SPEED;  // crossed it: go back
   else if (linePos == LP_FAR) v.y = SPEED;           // too deep: come forward
+  defLastVy = v.y;
   bool atSide = seen(state, rightSide.mid | rightSide.in | leftSide.mid | leftSide.in) ||
                 rightSide.backing || leftSide.backing;
   if (atSide) v.y = max(v.y, 0.0f);
