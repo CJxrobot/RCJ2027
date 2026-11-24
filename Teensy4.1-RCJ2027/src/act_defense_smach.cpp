@@ -4,30 +4,37 @@
 // T12 (Act): defense robot as a state machine
 // Ball: final_ball_data = IR only for now; switch the commented line to use camera + IR.
 //
+// Rules 2.6 / 2.8: never FULLY inside our penalty area (the line is part of the area).
+//
 //   DEFEND  back sensor on a line (robot outside the area)                       -> RETURN
-//   DEFEND  stay BEHIND the penalty line: line kept between F_in and F_out (front sensors)
+//           F_in kept on the penalty line (front of the robot always past the line)
 //           ball seen:    move sideways to keep the ball straight ahead
 //           no ball:      move sideways until the back goal is at 270 (in front of our goal)
-//           ball within 90 +- LEAVE_FRONT_DEG for LEAVE_HOLD_MS (breaks < LEAVE_BREAK_MS ignored) -> LEAVE
+//           LEAVE_HOLD_MS (breaks < LEAVE_BREAK_MS ignored) of:
+//             ball within 90 +- LEAVE_FRONT_DEG, or
+//             robot stopped at the side, ball within 90 +- LEAVE_SIDE_DEG and still (rule 2.5) -> LEAVE
 //   LEAVE   leave the penalty area and take the ball
 //           ball held:    shoot_control() (same as the attack robot)
 //           ball 85-95:   rush straight at it, else chase_ball()
+//           once out and near our goal: never drive back into the area
 //           line handling only when the back goal is more than LINE_SIDE_GOAL_DEG off 270
 //           (and, once US_Sensor() is filled, a side ultrasonic < LINE_SIDE_US_CM)
-//           ball lost / ball behind / too far from our goal / LEAVE_MAX_MS over  -> RETURN
-//   RETURN  drive toward our goal (camera), go around the ball if it is in the way;
+//           ball lost / ball behind / too far from our goal / LEAVE_MAX_MS over
+//             -> RETURN if it crossed out of the area, else DEFEND
+//   RETURN  heading more than RETURN_TURN_DEG off 90: turn first (put back facing our goal)
+//           drive toward our goal (camera), go around the ball if it is in the way;
 //           goal beside the robot (0 / 180 +- RETURN_SIDE_DEG): forward first, then to the goal
-//           a FRONT sensor sees the line (robot behind it), or
-//           camera: our goal closer than RETURN_DONE_CM (inside the area)        -> DEFEND
+//           a FRONT sensor sees the line                                         -> DEFEND
 //
 // Every loop, before the states: our goal must be known (camera, or ultrasonic later).
-//   unknown -> stop (LEAVE -> RETURN);  DEFEND farther than DEFEND_MAX_CM -> RETURN
+//   unknown -> stop (LEAVE ends);  DEFEND farther than DEFEND_MAX_CM -> RETURN
 //
 // Before START the OLED shows live data. Lift the robot: motors stop.
 
 // ----- DEFEND: line following (same as act_defense) -----
 #define SPEED       30  // forward / backward on the penalty line
 #define BACK_SPEED  15  // backing off from a side line
+#define FINE_SPEED  15  // small forward / back correction after F_in lost the line
 #define DEF_SIDE_GOAL_DEG 65.0f // camera guard: back goal more than this off 270 -> no further away sideways
 
 // ----- DEFEND: sideways -----
@@ -40,6 +47,9 @@
 #define LEAVE_FRONT_DEG  5.0f  // ball within 90 +- this counts as "straight ahead" (85-95)
 #define LEAVE_HOLD_MS    3000  // ... for this long
 #define LEAVE_BREAK_MS   200   // ball out of the window shorter than this (noise): timer keeps running
+#define LEAVE_SIDE_DEG   50.0f // robot stopped at the side of the area, ball within 90 +- this ...
+#define BALL_STILL_DEG   8.0f  // ... and not moving (angle within this) for LEAVE_HOLD_MS -> LEAVE
+                               // (rule 2.5: must touch the ball on the neutral spot next to the area)
 
 // ----- LEAVE -----
 #define LEAVE_RUSH_SPEED 70.0f // ball 85-95: straight at it
@@ -59,9 +69,7 @@
 #define DODGE_OFFSET_DEG 60.0f // ... by turning the path this much away from the ball
 #define DEFEND_MAX_CM    45.0f // DEFEND: our goal farther than this = pushed out of the area -> RETURN
                                // (defending spots 16-33 cm, far corner of the area ~46 cm)
-#define RETURN_DONE_CM   20.0f // camera: back goal closer than this = inside the penalty area, done
-                               // (front penalty line is 24 cm from the goal line)
-                               // no goal on the camera: RETURN stops and waits (no blind driving)
+#define RETURN_TURN_DEG  20.0f // RETURN: heading more than this off 90 (e.g. put back facing our goal): turn first
 
 // Sensors as lineState bits (mux 2 channel + 16), same as act_defense
 #define M2(ch) (1UL << (16 + (ch)))
@@ -75,29 +83,28 @@ Side leftSide  = {M2(1),  M2(0),  false};
 
 static bool seen(uint32_t state, uint32_t mask) { return (~state & mask) != 0; }
 
-// Where the penalty line is, remembered from the last mux 2 sensor that saw it.
-// Goal: the line stays between F_in and F_out, so the robot is always behind it.
-//   LP_NEAR    F_in saw it last:  line just ahead, or it has passed F_in (robot crossing) -> back
-//   LP_FAR     F_out saw it last: line ahead out of reach (robot too deep)               -> forward
-//   LP_BEHIND  B saw it last:     robot is outside, the line is behind it                -> back
-//   LP_BETWEEN line left F_out going forward / F_in going back: it is between them     -> stop
-//              (F_in and F_out are further apart than the line is wide: never both at once)
-enum LinePos : uint8_t { LP_UNKNOWN, LP_NEAR, LP_FAR, LP_BEHIND, LP_BETWEEN };
+// Rules 2.6 / 2.8: the robot must never be FULLY inside the penalty area (the line is part of
+// the area). Target: F_in (5.5 cm ahead of the centre) on the line, so the front of the robot
+// (11 cm) is always past the line.
+//   LP_AT     F_in saw the line last
+//   LP_AHEAD  line is ahead of F_in (F_out saw it, or F_in lost it while backing) -> forward
+//   LP_OVER   line is behind F_in (robot over the line)                         -> back
+//   unknown -> forward (never deeper into the area)
+enum LinePos : uint8_t { LP_UNKNOWN, LP_AT, LP_AHEAD, LP_OVER };
 static LinePos linePos = LP_UNKNOWN;
 
 static void updateLinePos(uint32_t state) {
-  bool in = seen(state, FRONT_IN), out = seen(state, FRONT_OUT), back = seen(state, BACK);
-  if (in && !out)           linePos = LP_NEAR;
-  else if (out && !in)      linePos = LP_FAR;
-  else if (back && !in && !out) linePos = LP_BEHIND;
-  // in && out: line between them = right place, keep the last value
+  if (seen(state, FRONT_IN))       linePos = LP_AT;
+  else if (seen(state, FRONT_OUT)) linePos = LP_AHEAD;
 }
 
-// DEFEND only: last forward / back command and what the front sensors saw last loop
-static float defLastVy = 0;
-static bool defPrevIn = false, defPrevOut = false;
+// DEFEND only: last forward / back move (not 0) and whether F_in saw the line last loop
+static float defLastMove = 0;
+static bool defPrevIn = false;
+static bool defBlocked = false;    // sideways move toward the ball stopped by a side line / camera guard
 
-static bool behindLine() { return linePos == LP_NEAR || linePos == LP_FAR || linePos == LP_BETWEEN; }
+// LEAVE only: back sensors saw the line = robot has crossed out of the area
+static bool leaveOut = false;
 
 // Side line: in sees it -> back off, only mid -> stop there, none -> free (no memory, no timer)
 static float sideLimit(Side& s, uint32_t state) {
@@ -133,17 +140,26 @@ static const char* stateName[] = {"DEFEND", "LEAVE", "RETURN"};
 static DefState st = DEFEND;
 static uint32_t stStart = 0, frontStart = 0, frontLastIn = 0, lastBallSeen = 0;
 static bool frontTiming = false;
+static float frontAngle = 0;     // ball angle when the LEAVE timer started
 static const char* why = "";
 
 static void go(DefState s, const char* reason) {
   st = s;
   stStart = millis();
   frontTiming = false;
-  defLastVy = 0;                               // DEFEND starts fresh (no old motion)
-  defPrevIn = defPrevOut = false;
+  defLastMove = 0;                             // DEFEND starts fresh (no old motion)
+  defPrevIn = false;
+  leaveOut = false;
   if (s == RETURN) linePos = LP_UNKNOWN;       // old line memory may be wrong (pushed): find it again
   why = reason;
   Serial.printf("%lu ms: -> %s (%s)\n", millis(), stateName[s], reason);
+}
+
+// End of LEAVE: crossed out of the area -> RETURN; still in it -> DEFEND (RETURN would drive
+// toward our goal = deeper into the area, rules 2.6 / 2.8)
+static void leaveEnd(const char* reason) {
+  if (leaveOut) go(RETURN, reason);
+  else          go(DEFEND, "still in the area");
 }
 
 static Vec2 polarV(float speed, float deg) {
@@ -159,9 +175,7 @@ static bool backGoalOk() {
 
 // DEFEND: penalty-line following + sideways toward the ball (or the goal centre)
 static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
-  int back = __builtin_popcount(~state & BACK);
   Vec2 v;
-  if (back == 2) return v;                           // vertical line behind: stop
 
   // Left AND right side sensors see a line: it is the front line under the robot, not the
   // side lines (a side line only reaches one side). Robot is over the line: straight back.
@@ -169,25 +183,21 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
   bool rightSeen = seen(state, rightSide.mid | rightSide.in);
   if (leftSeen && rightSeen) {
     leftSide.backing = rightSide.backing = false;
-    linePos = LP_NEAR;
-    v.y = -SPEED;
+    linePos = LP_OVER;
+    defLastMove = v.y = -SPEED;
     return v;
   }
 
-  // Forward / back: keep the penalty line between F_in and F_out (always behind the line)
-  // The line just left F_out going forward, or F_in going back: it is in the gap between them
+  // Forward / back: F_in on the line (robot partly outside the area, rules 2.6 / 2.8)
   bool in = seen(state, FRONT_IN), out = seen(state, FRONT_OUT);
-  if (!in && !out && ((defPrevOut && defLastVy > 0) || (defPrevIn && defLastVy < 0)))
-    linePos = LP_BETWEEN;
+  if (!in && defPrevIn) linePos = defLastMove < 0 ? LP_AHEAD : LP_OVER;   // F_in just lost it
   defPrevIn = in;
-  defPrevOut = out;
-  if (in && out)       v.y = 0;                      // line between them: right place
-  else if (in)         v.y = -SPEED;                 // line close: back off
-  else if (out)        v.y =  SPEED;                 // line a bit far: come forward
-  else if (linePos == LP_BETWEEN) v.y = 0;           // line between F_in and F_out: right place
-  else if (linePos == LP_NEAR || linePos == LP_BEHIND) v.y = -SPEED;  // crossed it: go back
-  else if (linePos == LP_FAR) v.y = SPEED;           // too deep: come forward
-  defLastVy = v.y;
+  if (in)                        v.y = 0;            // right place
+  else if (out)                  v.y = SPEED;        // line further ahead: too deep, come forward
+  else if (linePos == LP_OVER)   v.y = -FINE_SPEED;  // passed over it: back a little
+  else if (linePos == LP_AT)     v.y = -FINE_SPEED;  // (memory from another state: same)
+  else                           v.y = linePos == LP_AHEAD ? FINE_SPEED : SPEED;  // ahead / unknown
+  if (v.y != 0) defLastMove = v.y;
   bool atSide = seen(state, rightSide.mid | rightSide.in | leftSide.mid | leftSide.in) ||
                 rightSide.backing || leftSide.backing;
   if (atSide) v.y = max(v.y, 0.0f);
@@ -198,6 +208,7 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
   float ref = ball.src != SRC_NONE ? wrap180(ball.angle - 90.0f)
                                    : (backGoalOk() ? wrap180(fieldData.back_goal.angle - 270.0f) : 0);
   v.x = fabsf(ref) <= DEF_CENTER_DEAD ? 0 : constrain(off, -DEF_SIDE_MAX, DEF_SIDE_MAX);
+  float wantX = v.x;
 
   float rightLim = sideLimit(rightSide, state), leftLim = sideLimit(leftSide, state);
   v.x = max(min(v.x, rightLim), -leftLim);           // side lines always win
@@ -209,6 +220,7 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
     if (g < -DEF_SIDE_GOAL_DEG) v.x = min(v.x, 0.0f);
     if (g >  DEF_SIDE_GOAL_DEG) v.x = max(v.x, 0.0f);
   }
+  defBlocked = (wantX > 0 && v.x <= 0) || (wantX < 0 && v.x >= 0);
   return v;
 }
 
@@ -317,7 +329,7 @@ void loop() {
   // Highest priority, every state: where is our goal?
   OurGoal goal = ourGoal(us);
   if (!goal.known) {
-    if (st == LEAVE) go(RETURN, "goal unknown");
+    if (st == LEAVE) leaveEnd("goal unknown");
     frontTiming = false;                            // no LEAVE while the goal is unknown
     set_ramp(false);
     Vector_Motion(0, 0, 0);                         // stop, hold heading 90
@@ -328,14 +340,24 @@ void loop() {
 
   switch (st) {
     case DEFEND: {
-      bool front = ball.src != SRC_NONE && fabsf(wrap180(ball.angle - 90.0f)) <= LEAVE_FRONT_DEG;
-      if (front) {
-        if (!frontTiming) { frontTiming = true; frontStart = now; }
+      // LEAVE timer: ball straight ahead, or (rule 2.5) robot stopped at the side of the area
+      // with the ball not moving ahead of it (e.g. ball on the neutral spot next to the area)
+      bool seenBall = ball.src != SRC_NONE;
+      float off90 = fabsf(wrap180(ball.angle - 90.0f));
+      bool front = seenBall && off90 <= LEAVE_FRONT_DEG;
+      bool side  = seenBall && defBlocked && off90 <= LEAVE_SIDE_DEG;
+      if (front || side) {
+        if (!frontTiming) { frontTiming = true; frontStart = now; frontAngle = ball.angle; }
+        else if (!front && fabsf(wrap180(ball.angle - frontAngle)) > BALL_STILL_DEG) {
+          frontStart = now; frontAngle = ball.angle;           // ball moving: start again
+        }
         frontLastIn = now;
       } else if (frontTiming && now - frontLastIn > LEAVE_BREAK_MS) {
         frontTiming = false;                       // out of the window too long: start again
       }
-      if (frontTiming && now - frontStart >= LEAVE_HOLD_MS) { go(LEAVE, "ball in front 3 s"); break; }
+      if (frontTiming && now - frontStart >= LEAVE_HOLD_MS) {
+        go(LEAVE, front ? "ball in front 3 s" : "ball beside, still 3 s"); break;
+      }
       // Back sensor on a line: robot is outside, the line is behind it -> camera brings it back
       if (seen(state, BACK)) { go(RETURN, "back sensor on the line"); break; }
       v = defendMotion(state, ball);
@@ -344,12 +366,12 @@ void loop() {
 
     case LEAVE: {
       if (!has_ball()) {
-        if (now - lastBallSeen > BALL_LOST_MS)                   { go(RETURN, "ball lost"); break; }
+        if (now - lastBallSeen > BALL_LOST_MS)                   { leaveEnd("ball lost"); break; }
         if (ball.src != SRC_NONE && fabsf(wrap180(ball.angle - 270.0f)) < BEHIND_DEG)
-                                                                 { go(RETURN, "ball behind"); break; }
+                                                                 { leaveEnd("ball behind"); break; }
       }
-      if (goal.dist > LEAVE_MAX_DIST_CM)                          { go(RETURN, "too far"); break; }
-      if (now - stStart > LEAVE_MAX_MS)                          { go(RETURN, "time up"); break; }
+      if (goal.dist > LEAVE_MAX_DIST_CM)                          { leaveEnd("too far"); break; }
+      if (now - stStart > LEAVE_MAX_MS)                          { leaveEnd("time up"); break; }
 
       ShootCtl shot = shoot_control(fieldData);
       if (shot.active) {
@@ -362,6 +384,16 @@ void loop() {
         v = chase_ball(ball, fieldData);
       }
 
+      if (seen(state, BACK)) leaveOut = true;           // robot has crossed out of the area
+      // Close to our goal after leaving: never drive back into the area (rules 2.6 / 2.8).
+      // Block the move toward any arm that sees a line.
+      if (leaveOut && goal.dist < PENALTY_ZONE_CM) {
+        if (seen(state, BACK))                             v.y = max(v.y, 0.0f);
+        if (seen(state, FRONT_IN | FRONT_OUT))             v.y = min(v.y, 0.0f);
+        if (seen(state, rightSide.mid | rightSide.in))     v.x = min(v.x, 0.0f);
+        if (seen(state, leftSide.mid | leftSide.in))       v.x = max(v.x, 0.0f);
+      }
+
       if (leaveLineOn(us)) {
         LineCtl line = back_to_field(got & SENSE_GOT_LINE);
         if (line.active) { v = line.v; set_aim(false); set_target_heading(90); set_ramp(false); }
@@ -370,14 +402,12 @@ void loop() {
     }
 
     case RETURN: {
-      // Done only when a FRONT sensor sees the line (line ahead = robot behind it).
-      // Still behind it (never crossed): done at once.
-      if (behindLine() && goal.dist <= DEFEND_MAX_CM) { go(DEFEND, "behind the line"); break; }
-      if (goal.dist < RETURN_DONE_CM) {                        // inside the area, line is ahead
-        go(DEFEND, "camera: at our goal");
-        linePos = LP_FAR;                                      // DEFEND comes forward to the line
-        break;
+      // Done when a FRONT sensor sees the line (robot coming in from outside: F_in first)
+      if (seen(state, FRONT_IN | FRONT_OUT) && goal.dist <= DEFEND_MAX_CM) {
+        go(DEFEND, "at the line"); break;
       }
+      // Put back facing our goal (rule 2.8): turn first, do not drive toward the wall
+      if (fabsf(wrap180(current_heading() - 90.0f)) > RETURN_TURN_DEG) break;
 
       float dir = goal.angle;
       bool besideGoal = fabsf(wrap180(goal.angle)) < RETURN_SIDE_DEG ||

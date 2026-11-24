@@ -108,6 +108,10 @@ std::vector<Scenario> scenarios = {
    10, -74, 90, 4, {{0, 0, 0, false}}},
   {"beside_goal", "Robot beside our goal, outside the area: forward first, then into the area (not along the goal line)",
    58, -102, 90, 5, {{0, 0, 0, false}}},
+  {"neutral_spot", "Ball still on the neutral spot next to our area (40, -64.5): robot must go and touch it (rule 2.5)",
+   0, -93, 90, 8, {{0, 40, -64.5f, true}}},
+  {"restart_corner", "Put back after out of bounds: own corner, facing our goal (rule 2.8): turn, then return, no wall",
+   -60, -100, 270, 5, {{0, 0, 0, false}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };
@@ -346,6 +350,27 @@ void moveBall(float dt) {
   lastKickPin = kickPin;
 }
 
+// ===================== Rule monitor =====================
+// Rules 2.6 / 2.8: robot fully inside a penalty area (the line is part of the area) or touching a wall
+// = out of bounds. Signed distance from the area edge (outer edge of the line), < 0 inside.
+float areaDist(float x, float y) {
+  float qx = fabsf(x), qy = -fabsf(y);           // both areas, mirrored onto ours (y < 0)
+  float front = -(LINE_Y - PA_DEPTH) + 1.0f;     // outer edge of the front line
+  float side = PA_HALF + 1.0f, cy = -(LINE_Y - PA_DEPTH + PA_R);
+  if (qx > PA_HALF - PA_R && qy > cy) return hypotf(qx - (PA_HALF - PA_R), qy - cy) - (PA_R + 1.0f);
+  return max(qx - side, qy - front);
+}
+
+void ruleCheck() {
+  static bool wasInside = false, wasWall = false;
+  bool inside = areaDist(bot.x, bot.y) <= -ROBOT_R;
+  bool wall = fabsf(bot.x) >= WALL_X - ROBOT_R - 0.05f || fabsf(bot.y) >= WALL_Y - ROBOT_R - 0.05f;
+  if (inside && !wasInside) simLog("RULE: robot FULLY inside the penalty area (out of bounds, 2.6 / 2.8)");
+  if (wall && !wasWall)     simLog("RULE: robot touches a wall (out of bounds, 2.8)");
+  wasInside = inside;
+  wasWall = wall;
+}
+
 void record() {
   Frame f = {sim_us / 1e6f, bot.x, bot.y, bot.h, ball.x, ball.y, ball.visible,
              {bot.wheel[0], bot.wheel[1], bot.wheel[2], bot.wheel[3]}, lineState, line_flag(), has_ball()};
@@ -364,6 +389,7 @@ void sim_advance(uint32_t us) {
     }
     moveRobot(dt);
     moveBall(dt);
+    ruleCheck();
     sim_set_pin(BALL_POSESSION, ballHeld() ? LOW : HIGH);
     if (sim_us >= nextSense)  { nextSense  += SENSE_US;  sendSense(); }
     if (sim_us >= nextCamera) { nextCamera += CAMERA_US; sendCamera(); }
