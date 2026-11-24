@@ -12,8 +12,13 @@ SCEN=${2:-all}
 MUX2=0
 [[ $PROG == *defense* ]] && MUX2=1            # defense robot: mux 2 line sensors
 
+command -v g++ >/dev/null || { echo "g++ not found: see README.md (Setup)"; exit 1; }
+EXTRA=""
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXTRA="-static -lws2_32" ;; esac   # Git Bash on Windows
+
 mkdir -p out
+echo "Building $PROG ..."
 g++ -std=gnu++17 -O2 -w -fpermissive -Istub -I../lib/core_act -I../include \
     -DSIM_MUX2=$MUX2 -DSIM_PROG="\"$PROG\"" \
-    ../lib/core_act/core_act.cpp ../src/$PROG.cpp fake_hw.cpp world.cpp live.cpp -o out/sim_$PROG
+    ../lib/core_act/core_act.cpp ../src/$PROG.cpp fake_hw.cpp world.cpp live.cpp $EXTRA -o out/sim_$PROG
 ./out/sim_$PROG $SCEN
