@@ -1,5 +1,5 @@
-# T04 test sender: run on the Maix Cam instead of Cam.py.
-# Sends fake /field_data v2 packets at 100 Hz on the same UART as Cam.py:
+# T04 test sender: run on the Maix Cam instead of goal_ball_detection.py.
+# Sends fake /field_data v2 packets at 100 Hz on the same UART as goal_ball_detection.py:
 #   ball  : angle sweeps +3 deg per packet, distance 50 cm
 #   front : 90 deg, 120 cm, seen / not seen every 2 s
 #   back  : 270 deg, 80 cm, always seen
