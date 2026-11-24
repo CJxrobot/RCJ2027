@@ -50,11 +50,12 @@
 #define FINE_SPEED  15  // small forward / back correction around the ring stop point
 #define DEF_SLOW_GOAL_DEG 35.0f // camera: back goal more than this off 270 -> sideways move away from it slows ...
 #define DEF_SIDE_GOAL_DEG 60.0f // ... down to 0 here (end of the penalty line)
-// Speed ratio per side for the move toward that end of the penalty line (robot on that side of
-// the goal, moving away from it). The real robot slides out to the RIGHT only (field 2026-11-24):
-// right side slower. 1.0 = no change.
-#define DEF_SIDE_RATIO_R  0.7f
-#define DEF_SIDE_RATIO_L  1.0f
+// Body drift (field 2026-11-24): moving sideways the robot also drifts forward (up), more when
+// moving right. Every state adds a backward part = DRIFT_K x sideways speed, per direction.
+// MEASURE: robot facing 90, drive only sideways for ~1 m, drift forward = dy cm over dx cm
+// sideways -> DRIFT_K = dy / dx (drifting backward instead: negative). 0 = no correction.
+#define DRIFT_K_R         0.10f // moving right (estimate, measure)
+#define DRIFT_K_L         0.0f  // moving left (measure)
 #define LOCK_HEAD_DEG     10.0f // corner lock only facing 90 +- this (like the reference program)
 // Pushed back into the area (opponent): forward, speed rising (reference program)
 #define RECOVER_SPEED     30.0f // start
@@ -435,12 +436,11 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
 
   // Camera angle slow-down: goal more than DEF_SLOW_GOAL_DEG off 270 = robot near the end of
   // the penalty line. Moving further away from the goal: speed falls linearly to 0 at
-  // DEF_SIDE_GOAL_DEG, x DEF_SIDE_RATIO_R / _L for that side. Applied BEFORE the side lines: backing off a side line (in sensor) is a
+  // DEF_SIDE_GOAL_DEG. Applied BEFORE the side lines: backing off a side line (in sensor) is a
   // safety move and is never slowed (field 2026-11-24: back-off 15 -> 9 %, robot stuck).
   float g = wrap180(goal.angle - 270.0f);            // robot right of the goal -> g < 0
   float k = constrain((DEF_SIDE_GOAL_DEG - fabsf(g)) / (DEF_SIDE_GOAL_DEG - DEF_SLOW_GOAL_DEG), 0.0f, 1.0f);
-  if (g < 0 && v.x > 0) v.x *= k * DEF_SIDE_RATIO_R;
-  if (g > 0 && v.x < 0) v.x *= k * DEF_SIDE_RATIO_L;
+  if ((g < 0 && v.x > 0) || (g > 0 && v.x < 0)) v.x *= k;
 
   float rightLim = sideLimit(rightSide, state), leftLim = sideLimit(leftSide, state);
   v.x = max(min(v.x, rightLim), -leftLim);           // side lines always win
@@ -750,6 +750,10 @@ void loop() {
       break;
     }
   }
+
+  // Body drift: cancel the forward drift of a sideways move (last, after every limit: it is not a
+  // move of its own, it only keeps the real path straight sideways)
+  v.y -= (v.x > 0 ? DRIFT_K_R : DRIFT_K_L) * fabsf(v.x);
 
   // Corner locked and nothing to do: motors cut (reference program). Only while still facing
   // 90 +- LOCK_HEAD_DEG: turned (pushed) -> Vector_Motion turns it back first.
