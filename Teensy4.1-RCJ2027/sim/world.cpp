@@ -12,6 +12,11 @@
 void setup();
 void loop();
 
+#ifdef _WIN32
+// MinGW does not link the __attribute__((weak)) US_Sensor() in core_act.cpp: same empty one here
+UsData US_Sensor() { return UsData(); }
+#endif
+
 // ===================== Numbers (change here) =====================
 // Field (RCJ 2025 rules): playing area 158 x 219, out area 12, lines 2 cm wide.
 // Line positions below are line centres.

@@ -8,7 +8,8 @@ Runs the robot program on a PC **without changing it**:
 ./run.sh act_defense_smach ball_front   # one scenario
 ```
 Output: `out/<program>_<scenario>.html`. Open it in a browser (Play / slider; `...html#t=3.5` opens paused at 3.5 s).
-Windows: run `run.sh` in Git Bash / WSL with g++ installed.
+Windows (PowerShell): `.\run.bat` or `.\run.bat act_defense_smach ball_front`.
+Needs g++ once: `winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT`, then open a new terminal.
 
 | File | What it does |
 |---|---|
