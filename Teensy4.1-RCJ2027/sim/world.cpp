@@ -122,6 +122,10 @@ std::vector<Scenario> scenarios = {
    0, -92, 90, 4, {{0, 0, -20, true}, {2.0f, 0, -20, true}, {2.6f, 25, -113, true}}},
   {"tilted_corner", "Robot turned 30 deg at the left side of the area: back, front and left sensors on lines",
    -33, -100, 120, 4, {{0, -20, -40, true}}},
+  {"on_side_line", "Robot facing 90, sitting on the left side line of the area (x -39): back, front, left on lines",
+   -37, -96, 90, 4, {{0, -20, -40, true}}},
+  {"on_side_line_noball", "Same spot, no ball",
+   -37, -96, 90, 4, {{0, 0, 0, false}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };
