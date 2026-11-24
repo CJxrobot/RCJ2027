@@ -31,14 +31,14 @@
 //
 // Before START the OLED shows live data. Lift the robot: motors stop.
 
-// ----- DEFEND: line following (same as act_defense) -----
+// ----- DEFEND: penalty line -----
 #define SPEED       30  // forward / backward on the penalty line
 #define BACK_SPEED  15  // backing off from a side line
-#define FINE_SPEED  15  // small forward / back correction after F_in lost the line
+#define FINE_SPEED  15  // small forward / back correction around the F_out stop point
 #define DEF_SIDE_GOAL_DEG 65.0f // camera guard: back goal more than this off 270 -> no further away sideways
 
 // ----- DEFEND: sideways -----
-#define DEF_SIDE_KP      1.0f  // sideways speed per deg the ball is off 90
+#define DEF_SIDE_KP      1.0f  // sideways speed per deg the ball is off the ball - goal line
 #define DEF_GOAL_KP      1.0f  // no ball: sideways speed per deg the back goal is off 270
 #define DEF_CENTER_DEAD  5.0f  // deg, no sideways move inside this
 #define DEF_SIDE_MAX     40.0f // largest sideways speed
@@ -77,17 +77,18 @@
                                // (normal spot ~8 cm, fully inside from 10 cm: front 11 cm vs line 1 cm)
 #define RETURN_TURN_DEG  20.0f // DEFEND / RETURN: heading more than this off 90: stop and turn first
 
-// Sensors as lineState bits (mux 2 channel + 16), same as act_defense
+// Sensors as lineState bits (ring = mux 1 channel 0-15, mux 2 = channel + 16)
 #define M2(ch) (1UL << (16 + (ch)))
 #define FRONT_IN  M2(7)
 #define FRONT_OUT M2(11)
 #define BACK  (M2(4) | M2(3))
 #define RING_FRONT (1UL << 4)     // mux 1 ring channel 4 (90 deg, r 6.1 cm)
 #define FRONT_ANY (FRONT_IN | FRONT_OUT | RING_FRONT)
+#define RING_ALL   0xFFFFUL       // all 16 ring channels
 
-struct Side { uint32_t mid, in; bool backing; };
-Side rightSide = {M2(14), M2(13), false};
-Side leftSide  = {M2(1),  M2(0),  false};
+struct Side { uint32_t mid, in; };
+static const Side rightSide = {M2(14), M2(13)};
+static const Side leftSide  = {M2(1),  M2(0)};
 
 static bool seen(uint32_t state, uint32_t mask) { return (~state & mask) != 0; }
 
@@ -117,9 +118,8 @@ static bool defSettled = false;    // standing on the ball - goal line (no sidew
 static bool leaveOut = false;
 
 // Side line: in sees it -> back off, only mid -> stop there, none -> free (no memory, no timer)
-static float sideLimit(Side& s, uint32_t state) {
+static float sideLimit(const Side& s, uint32_t state) {
   bool mid = seen(state, s.mid), in = seen(state, s.in);
-  s.backing = in;
   if (in)  return -BACK_SPEED;
   if (mid) return 0;
   return 1000;
@@ -128,7 +128,7 @@ static float sideLimit(Side& s, uint32_t state) {
 // ----- Our goal: checked first every loop, highest priority -----
 // camera sees it -> its angle / distance
 // else ultrasonic fitted (R03, reserved; US_Sensor() returns 0 for now) -> back distance, angle 270
-// else unknown -> robot stops (no blind driving), LEAVE -> RETURN
+// else unknown -> robot stops (no blind driving), LEAVE ends
 struct OurGoal { bool known; float angle, dist; };
 
 static bool backGoalOk();
@@ -206,7 +206,6 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   bool leftSeen  = seen(state, leftSide.mid | leftSide.in);
   bool rightSeen = seen(state, rightSide.mid | rightSide.in);
   if (leftSeen && rightSeen) {
-    leftSide.backing = rightSide.backing = false;
     linePos = LP_OVER;
     defLastMove = v.y = -SPEED;
     return v;
@@ -225,16 +224,14 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   else if (linePos == LP_AT)     v.y = -FINE_SPEED;  // (memory from another state: back)
   else                           v.y = SPEED;        // unknown: forward, never deeper
   if (v.y != 0) defLastMove = v.y;
-  bool atSide = seen(state, rightSide.mid | rightSide.in | leftSide.mid | leftSide.in) ||
-                rightSide.backing || leftSide.backing;
+  bool atSide = leftSeen || rightSeen;                // at a side line: never back (deeper)
   if (atSide) v.y = max(v.y, 0.0f);
 
   // Sideways: stand on the line from the ball to our goal centre (covers both goal corners).
   // On that line the ball and our goal are 180 deg apart, seen from the robot.
   // No ball: centre on the goal (goal at 270).
-  float goalAng = backGoalOk() ? fieldData.back_goal.angle : 270.0f;
-  float err = ball.src != SRC_NONE ? wrap180(ball.angle - (goalAng + 180.0f))
-                                   : -wrap180(goalAng - 270.0f);
+  float err = ball.src != SRC_NONE ? wrap180(ball.angle - (goal.angle + 180.0f))
+                                   : -wrap180(goal.angle - 270.0f);
   float off = -err * (ball.src != SRC_NONE ? DEF_SIDE_KP : DEF_GOAL_KP);   // err < 0 -> move right
   defSettled = fabsf(err) <= DEF_CENTER_DEAD;
   v.x = defSettled ? 0 : constrain(off, -DEF_SIDE_MAX, DEF_SIDE_MAX);
@@ -245,11 +242,9 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
 
   // Camera guard: goal far off to one side = robot near the end of the penalty line,
   // do not move further away from the goal (replaces the old 300 ms memory)
-  if (backGoalOk()) {
-    float g = wrap180(fieldData.back_goal.angle - 270.0f);   // robot right of the goal -> g < 0
-    if (g < -DEF_SIDE_GOAL_DEG) v.x = min(v.x, 0.0f);
-    if (g >  DEF_SIDE_GOAL_DEG) v.x = max(v.x, 0.0f);
-  }
+  float g = wrap180(goal.angle - 270.0f);            // robot right of the goal -> g < 0
+  if (g < -DEF_SIDE_GOAL_DEG) v.x = min(v.x, 0.0f);
+  if (g >  DEF_SIDE_GOAL_DEG) v.x = max(v.x, 0.0f);
   defBlocked = (wantX > 0 && v.x <= 0) || (wantX < 0 && v.x >= 0);
 
   // Camera depth floor (rules 2.6 / 2.8): the sensors can be on a side line / curve while the
@@ -472,7 +467,7 @@ void loop() {
       }
       // Coming in: a back sensor or the ring is on a line -> slow, so it stops on the line
       // and does not slide fully into the area (rules 2.6 / 2.8)
-      bool onLine = seen(state, BACK) || (~state & 0xFFFFUL) != 0;
+      bool onLine = seen(state, BACK | RING_ALL);
       v = polarV(onLine ? FINE_SPEED : RETURN_SPEED, dir);
       break;
     }
