@@ -43,7 +43,7 @@ if not "%SCEN%"=="all" if exist "out\%PROG%_%SCEN%.html" start "" "out\%PROG%_%S
 exit /b 0
 
 :findgpp
-for /d %%D in ("%LOCALAPPDATA%\Microsoft\WinGet\Packages\BrechtSanders.WinLibs*") do if exist "%%D\mingw64\bin\g++.exe" set "PATH=%%D\mingw64\bin;%PATH%"
+for /d %%D in ("%LOCALAPPDATA%\Microsoft\WinGet\Packages\BrechtSanders.WinLibs*" "%ProgramFiles%\WinGet\Packages\BrechtSanders.WinLibs*") do if exist "%%D\mingw64\bin\g++.exe" set "PATH=%%D\mingw64\bin;%PATH%"
 for %%P in ("C:\msys64\ucrt64\bin" "C:\msys64\mingw64\bin" "C:\mingw64\bin" "C:\MinGW\bin") do if exist "%%~P\g++.exe" set "PATH=%%~P;%PATH%"
 where g++ >nul 2>nul && (echo Using g++ from: & where g++)
 exit /b 0
