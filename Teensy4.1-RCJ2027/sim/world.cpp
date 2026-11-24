@@ -237,16 +237,27 @@ void putObj(uint8_t* p, int i, bool seen, float x, float y, uint16_t d) {
   pkt_put16(p, i + 2, seen ? d : PKT_NONE);
 }
 
+// Real camera (measured 2026-11-24): its goal point is ~5 cm inside the goal, and the goal
+// distance reads too long at a slant (read = real / K, same K points as the robot program)
+const float CAM_GOAL_Y = LINE_Y + 6.0f;
+float camSlantK(float angle) {
+  float off = fabsf(wrap180(angle - 270.0f));
+  if (off <= 44) return 1.0f - 0.19f * off / 44;
+  if (off <= 66) return 0.81f - 0.20f * (off - 44) / 22;
+  return 0.61f;
+}
+
 void sendCamera() {
   bool b = ball.visible;
   uint8_t p[CAM_LEN] = {CAM_H1, CAM_H2};
   p[2] = (b ? CAM_FLAG_BALL : 0) | CAM_FLAG_FRONT | CAM_FLAG_BACK;
   putObj(p, 3, b, ball.x, ball.y, camPixels(dist(ball.x, ball.y)));
-  putObj(p, 7, true, 0, LINE_Y + 1, (uint16_t)lroundf(dist(0, LINE_Y + 1)));     // front goal (theirs)
+  putObj(p, 7, true, 0, CAM_GOAL_Y, (uint16_t)lroundf(dist(0, CAM_GOAL_Y)));     // front goal (theirs)
   float t = sim_us / 1e6f;
   bool ours = !(t >= sc->camOffFrom && t < sc->camOffTo);
   if (!ours) p[2] &= ~CAM_FLAG_BACK;
-  putObj(p, 11, ours, 0, -LINE_Y - 1, (uint16_t)lroundf(dist(0, -LINE_Y - 1)));  // back goal (ours)
+  float backRead = dist(0, -CAM_GOAL_Y) / camSlantK(robotAngle(0, -CAM_GOAL_Y));   // reads long at a slant
+  putObj(p, 11, ours, 0, -CAM_GOAL_Y, (uint16_t)lroundf(backRead));               // back goal (ours)
   p[15] = camSeq++;
   p[16] = pkt_sum(p, 1, 15);
   p[17] = CAM_END;
