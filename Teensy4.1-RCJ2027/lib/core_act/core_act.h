@@ -112,8 +112,12 @@ float wrap180(float a);                 // wrap to (-180, 180]
 //   s0-s3: lineState, bit = 0 when that sensor sees the line (all 1 = no line)
 //   found: 1 = ball seen; angle 0-359 (0xFFFF if not seen); strength: higher = closer
 // Sent every loop of the sense core (no rate limit): line first, ball = newest IR result.
+// Ultrasonic in its own packet (same length), sent by Sense when a new reading is in (~33/s):
+//   AB fL fH rL rH bL bH lL lH 0 chk     chk = sum of bytes [1..9]
+//   f / r / b / l: H1 front, H2 right, H3 back, H4 left, unit 0.1 cm, 0 = no reading
 #define SENSE_BAUD      921600
 #define SENSE_HDR       0xAA
+#define SENSE_US_HDR    0xAB
 #define SENSE_LEN       11
 
 static inline uint8_t pkt_sum(const uint8_t* b, int from, int to) {
@@ -148,8 +152,20 @@ struct IrBallData {
   uint32_t t_ms = 0;           // millis() of the newest packet, 0 = never
 };
 
+// Ultrasonic from the AB packet. Only stored here: no library function uses it
+// (US_Sensor() stays empty, so the attack robot does not change)
+#define US_N_FRONT 0           // H1, 90 deg
+#define US_N_RIGHT 1           // H2, 0 deg
+#define US_N_BACK  2           // H3, 270 deg
+#define US_N_LEFT  3           // H4, 180 deg
+struct SenseUsData {
+  float cm[4] = {0, 0, 0, 0};  // front, right, back, left; 0 = no reading
+  uint32_t t_ms = 0;           // millis() of the newest AB packet, 0 = never
+};
+
 struct SenseLinkStats {
-  uint32_t pkts = 0;           // all packets
+  uint32_t pkts = 0;           // all line + ball packets
+  uint32_t us_pkts = 0;        // ultrasonic packets
   uint32_t line_pkts = 0;      // packets with a line in them
   uint32_t bad = 0;            // checksum errors
   uint32_t junk = 0;           // bytes dropped while looking for a header
@@ -158,11 +174,15 @@ struct SenseLinkStats {
 extern LineData lineData;
 extern IrBallData irBall;
 extern SenseLinkStats senseLinkStats;
+extern SenseUsData senseUs;
 
-// Parse every byte waiting on Serial8, non-blocking. Every packet updates lineData AND irBall.
-// Returns a bit mask: SENSE_GOT_PKT (any packet) | SENSE_GOT_LINE (a packet with a line in it)
+// Parse every byte waiting on Serial8, non-blocking. Every AA packet updates lineData AND irBall,
+// every AB packet updates senseUs.
+// Returns a bit mask: SENSE_GOT_PKT (an AA packet) | SENSE_GOT_LINE (an AA packet with a line in it)
+//                     | SENSE_GOT_US (an AB packet)
 #define SENSE_GOT_PKT  0x01
 #define SENSE_GOT_LINE 0x02
+#define SENSE_GOT_US   0x04
 uint8_t read_sense();
 
 // true if the IR ball packet is newer than max_age_ms and says the ball is seen

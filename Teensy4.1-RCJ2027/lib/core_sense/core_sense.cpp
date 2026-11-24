@@ -254,6 +254,16 @@ bool send_sense_packet(uint32_t state, const IrBall& ball) {
   return true;
 }
 
+bool send_us_packet() {
+  if (Serial8.availableForWrite() < SENSE_LEN) return false;
+  uint8_t p[SENSE_LEN] = {SENSE_US_HDR};
+  for (int i = 0; i < US_COUNT; i++)
+    pkt_put16(p, 1 + 2 * i, (uint16_t)constrain(lroundf(usDistCm[i] * 10.0f), 0L, 65535L));
+  p[10] = pkt_sum(p, 1, 9);
+  Serial8.write(p, SENSE_LEN);
+  return true;
+}
+
 // ===== Ultrasonic (R03) =====
 const uint8_t US_TRIG_PINS[US_COUNT] = {25, 37, 40, 41};   // H1-H4
 const uint8_t US_ECHO_PINS[US_COUNT] = {26, 27, 28, 31};

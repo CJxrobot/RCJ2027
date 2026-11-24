@@ -68,6 +68,10 @@ const float HOLD_DEG = 15.0f;                   // ball within 90 +- this and to
 const float IR_RANGE = 200.0f;                  // cm
 const float IR_NOISE_DEG = 3.0f;
 const uint32_t SENSE_US = 2000, CAMERA_US = 5000, GYRO_US = 10000;   // 500 / 200 / 100 Hz
+const uint32_t US_STEP_US = 30000;              // ultrasonic: one sensor every 30 ms (core_sense)
+const float US_ALPHA = 0.35f;                   // ... same moving average as core_sense
+const float US_SENSOR_R = 11.0f;                // sensors on the robot edge
+const float GOAL_DEPTH = 7.4f;                  // goal back wall behind the goal line
 const uint32_t LOOP_US = 100;                   // one loop() = 100 us of simulated time
 const uint32_t FRAME_MS = 20;                   // recording rate
 
@@ -85,6 +89,8 @@ struct Scenario {
   std::vector<Key> ball;
   float camOffFrom = -1, camOffTo = -1;         // our goal hidden from the camera in this time (s)
   float pushT = -1, pushX = 0, pushY = 0;       // at pushT the robot is moved to (pushX, pushY)
+  int usDead = 0;                               // ultrasonic that read nothing: bit 0 front, 1 right, 2 back, 3 left
+  float shoveFrom = -1, shoveTo = -1, shoveVx = 0, shoveVy = 0;   // opponent pushes (cm/s, world) in this time
 };
 
 std::vector<Scenario> scenarios = {
@@ -140,6 +146,21 @@ std::vector<Scenario> scenarios = {
    0, -93, 90, 8, {{0, 0, -40, true}, {3.45f, 0, -40, true}, {3.5f, -25, -62, true}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
+  // Ultrasonic (R03): US bits 1 front, 2 right, 4 back, 8 left = sensor reads nothing
+  {"pushed_back", "Opponent pushes the robot back into the area (40 cm/s, 1.5-2.5 s): forward recovery, never fully inside",
+   0, -91, 90, 4, {{0, 20, -40, true}}, -1, -1, -1, 0, 0, 0, 1.5f, 2.5f, 0, -40},
+  {"pushed_back_us_dead", "Same push, back ultrasonic broken: the line order (ring -> F_out -> gone) must catch it",
+   0, -91, 90, 4, {{0, 20, -40, true}}, -1, -1, -1, 0, 0, 4, 1.5f, 2.5f, 0, -40},
+  {"pushed_back_corner", "Same push at the right end of the penalty line",
+   0, -91, 90, 5, {{0, 75, -70, true}}, -1, -1, -1, 0, 0, 0, 2.5f, 3.5f, 0, -40},
+  {"corner_slide_left", "Ball jumps far left: robot slides fast to the left corner of the area, must lock there",
+   20, -91, 90, 3, {{0, 30, -50, true}, {1.0f, 30, -50, true}, {1.05f, -65, -82, true}}},
+  {"corner_unlock", "Robot locked at the right corner, then the ball goes far left: unlock, slide over",
+   0, -91, 90, 6, {{0, 75, -70, true}, {3.0f, 75, -70, true}, {3.05f, -75, -70, true}}},
+  {"pushed_out_us_dead", "pushed_out with the back ultrasonic broken: RETURN by camera only, slower",
+   0, -93, 90, 7, {{0, 75, -70, true}}, -1, -1, 2.0f, 0, -33, 4},
+  {"leave_to_side_us_dead", "leave_to_side with the left ultrasonic broken: camera slows it, x 0.7 toward the left",
+   0, -93, 90, 6, {{0, 0, -45, true}, {3.25f, 0, -45, true}, {3.7f, -74, -40, true}}, -1, -1, -1, 0, 0, 8},
 };
 
 // ===================== World state =====================
@@ -148,7 +169,7 @@ struct Ball { float x, y, vx, vy; bool visible, scripted; } ball;
 const Scenario* sc;
 std::vector<LineSensor> sensors;
 uint32_t lineState = 0xFFFFFFFF;
-uint64_t nextSense = 0, nextCamera = 0, nextGyro = 0, nextFrame = 0;
+uint64_t nextSense = 0, nextCamera = 0, nextGyro = 0, nextFrame = 0, nextUs = 0;
 uint8_t camSeq = 0, gyroIdx = 0;
 int lastKickPin = 0;
 
@@ -234,6 +255,45 @@ void sendSense() {
   p[5] = found;
   pkt_put16(p, 6, ang);
   pkt_put16(p, 8, str);
+  p[10] = pkt_sum(p, 1, 9);
+  for (uint8_t b : p) Serial8.rx.push_back(b);
+}
+
+// Ultrasonic: one ray from the robot edge to the nearest wall or goal wall (cm)
+float rayToSeg(float px, float py, float dx, float dy, float ax, float ay, float bx, float by) {
+  float ex = bx - ax, ey = by - ay, den = dx * ey - dy * ex;
+  if (fabsf(den) < 1e-6f) return 1e9f;
+  float t = ((ax - px) * ey - (ay - py) * ex) / den;      // along the ray
+  float u = ((ax - px) * dy - (ay - py) * dx) / den;      // along the segment
+  return (t > 0 && u >= 0 && u <= 1) ? t : 1e9f;
+}
+
+float usRay(float deg) {
+  float px, py;
+  toWorld(deg, US_SENSOR_R, px, py);
+  float a = (bot.h - 90.0f + deg) * DEG_TO_RAD, dx = cosf(a), dy = sinf(a);
+  float gb = LINE_Y + GOAL_DEPTH, d = 1e9f;
+  const float seg[][4] = {
+    {-WALL_X, -WALL_Y, WALL_X, -WALL_Y}, {-WALL_X, WALL_Y, WALL_X, WALL_Y},
+    {-WALL_X, -WALL_Y, -WALL_X, WALL_Y}, {WALL_X, -WALL_Y, WALL_X, WALL_Y},
+    {-GOAL_HALF, -gb, GOAL_HALF, -gb}, {-GOAL_HALF, gb, GOAL_HALF, gb},           // goal back walls
+    {-GOAL_HALF, -LINE_Y, -GOAL_HALF, -gb}, {GOAL_HALF, -LINE_Y, GOAL_HALF, -gb}, // goal sides
+    {-GOAL_HALF, LINE_Y, -GOAL_HALF, gb}, {GOAL_HALF, LINE_Y, GOAL_HALF, gb}};
+  for (auto& g : seg) d = min(d, rayToSeg(px, py, dx, dy, g[0], g[1], g[2], g[3]));
+  return d > 255.0f ? 0 : d;                        // longer than the echo limit: no reading
+}
+
+// Same as core_sense us_update(): one sensor per 30 ms, filtered, AB packet after each reading
+void sendUs() {
+  static int cur = 3;
+  static float filt[4] = {0, 0, 0, 0};
+  const float dirDeg[4] = {90, 0, 270, 180};        // H1 front, H2 right, H3 back, H4 left
+  cur = (cur + 1) % 4;
+  float raw = (sc->usDead >> cur) & 1 ? 0 : usRay(dirDeg[cur]);
+  if (raw > 0) raw += randf(0.5f);
+  filt[cur] = raw <= 0 ? 0 : filt[cur] > 0 ? filt[cur] * (1 - US_ALPHA) + raw * US_ALPHA : raw;
+  uint8_t p[SENSE_LEN] = {SENSE_US_HDR};
+  for (int i = 0; i < 4; i++) pkt_put16(p, 1 + 2 * i, (uint16_t)lroundf(filt[i] * 10.0f));
   p[10] = pkt_sum(p, 1, 9);
   for (uint8_t b : p) Serial8.rx.push_back(b);
 }
@@ -428,12 +488,18 @@ void sim_advance(uint32_t us) {
       bot.x = sc->pushX; bot.y = sc->pushY; simLog("robot pushed");
     }
     moveRobot(dt);
+    float t = sim_us / 1e6f;
+    if (t >= sc->shoveFrom && t < sc->shoveTo) {      // opponent pushing
+      bot.x = constrain(bot.x + sc->shoveVx * dt, -WALL_X + ROBOT_R, WALL_X - ROBOT_R);
+      bot.y = constrain(bot.y + sc->shoveVy * dt, -WALL_Y + ROBOT_R, WALL_Y - ROBOT_R);
+    }
     moveBall(dt);
     ruleCheck();
     sim_set_pin(BALL_POSESSION, ballHeld() ? LOW : HIGH);
     if (sim_us >= nextSense)  { nextSense  += SENSE_US;  sendSense(); }
     if (sim_us >= nextCamera) { nextCamera += CAMERA_US; sendCamera(); }
     if (sim_us >= nextGyro)   { nextGyro   += GYRO_US;   sendGyro(); }
+    if (sim_us >= nextUs)     { nextUs     += US_STEP_US; sendUs(); }
     if (sim_us >= nextFrame)  { nextFrame  += FRAME_MS * 1000; record(); }
   }
 }
