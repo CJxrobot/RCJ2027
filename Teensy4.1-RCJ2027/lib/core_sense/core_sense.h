@@ -26,11 +26,12 @@
 #define LS_M1 14 // channel 0-15
 #define LS_M2 15 // reserved, channel 16-31
 #define LS_COUNT 16 // channels in use (M1 only), 32 when M2 is used
-// Line channels that have a sensor (bit = channel, 16-31 = mux 2).
+// Line channels that have a sensor (bit = channel, 16-31 = mux 2), set by line_sensor_config().
 // Channels outside the mask are never calibrated and never reported as a line.
-#ifndef LS_USED_MASK
-#define LS_USED_MASK 0xFFFFFFFFUL
-#endif
+// useMux2 = false: mux 2 is not read at all (faster) and reports no line.
+extern uint32_t lsUsedMask;
+extern bool lsUseMux2;
+void line_sensor_config(bool useMux2, uint32_t usedMask);
 
 // Line flag to act core: HIGH while any sensor sees a line (faster than UART)
 #define PIN_0 0
@@ -47,7 +48,8 @@ void core_sense_init();
 void update_ball_sensor();    // count LOW samples on all 20 sensors for IR_WINDOW_US (blocking)
 void fast_update_line_sensor();
 bool calibrate_line_sensor(); // true while scanning
-bool send_line_state();       // set PIN_0/PIN_1, send line + ball packet to act core (Serial8), true if sent
+bool send_line_state();       // set PIN_0/PIN_1, send line + newest ball (irBallLast) to act core, true if sent
+void update_ir_ball();        // read the IR sensors (~1 ms) and store the result in irBallLast
 
 // =====================================================================
 // Packet formats (keep the same as core_act.h and the Packets tab)
@@ -77,11 +79,10 @@ bool send_line_state();       // set PIN_0/PIN_1, send line + ball packet to act
 //   AA s0 s1 s2 s3 found angL angH strL strH chk     chk = sum of bytes [1..9]
 //   s0-s3: lineState, bit = 0 when that sensor sees the line (all 1 = no line)
 //   found: 1 = ball seen; angle 0-359 (0xFFFF if not seen); strength: higher = closer
-// Sent every loop while a line is seen, otherwise at SENSE_TX_HZ.
+// Sent every loop of the sense core (no rate limit): line first, ball = newest IR result.
 #define SENSE_BAUD      921600
 #define SENSE_HDR       0xAA
 #define SENSE_LEN       11
-#define SENSE_TX_HZ     100
 
 static inline uint8_t pkt_sum(const uint8_t* b, int from, int to) {
   uint8_t s = 0;
@@ -109,22 +110,21 @@ struct IrBall {
 // ===== IR ball (from sense_ir.cpp) =====
 //   ir_sample()       called once per mux channel inside fast_update_line_sensor();
 //                     samples the IR sensors there when IR_NONBLOCKING is 1
-//   compute_ir_ball() called once per loop (send_line_state() does it), returns the ball
+//   compute_ir_ball() reads the IR sensors and returns the ball (update_ir_ball() calls it)
 void ir_sample();
 IrBall compute_ir_ball();
+extern IrBall irBallLast;      // newest ball, sent in every packet
 
-// Send line + ball in one packet (see /sense_data above). Also sets PIN_0/PIN_1.
-//   line seen: sent every call (fastest reaction)
-//   no line:   sent at SENSE_TX_HZ, so the act core still gets the ball and "line cleared"
-// Skipped only if Serial8 has no room for the whole packet. Returns true if sent.
-// send_line_state() calls this with lineState and compute_ir_ball().
+// Send line + ball in one packet (see /sense_data above). Also sets PIN_0/PIN_1 first.
+// Sent on every call, no rate limit. Skipped only if Serial8 has no room for the whole packet.
+// send_line_state() calls this with lineState and irBallLast. Returns true if sent.
 bool send_sense_packet(uint32_t state, const IrBall& ball);
 
 // Counters for test programs
 struct SenseTxStats {
   uint32_t pkts = 0;          // all packets
   uint32_t line_pkts = 0;     // packets with a line in them
-  uint32_t skipped_full = 0;  // due but Serial8 TX buffer was full
+  uint32_t skipped_full = 0;  // Serial8 TX buffer was full
 };
 extern SenseTxStats senseTxStats;
 

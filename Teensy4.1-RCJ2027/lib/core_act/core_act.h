@@ -53,28 +53,14 @@ struct RobotState {
     bool  ramp_on = false;           // false: output the target at once (line escape)
 };
 
-// Top camera (MaixCam, Serial3); angle/dist = 0xFFFF when goal not found
-struct TopMaixData {
-    bool valid = false;
-    bool goal_found = false;
-    uint16_t goal_angle = 0xFFFF; // deg 0-359
-    uint16_t goal_dist = 0xFFFF;
-};
-
 extern GyroData gyroData;
-extern TopMaixData topmaixData;
 extern RobotState robot;
 extern Adafruit_SSD1306 display;
 
 void core_act_init();
 void update_gyro_sensor();
 void drawMessage(const char* msg);
-void readTopMaix_polar();  // old protocol: send 0xDD, wait for reply (blocking)
-
-// --- Top camera, new protocol: camera sends every frame, Serial3 RX by DMA ---
-// After camera_dma_begin(), readTopMaix_polar() no longer works
-void camera_dma_begin();
-bool read_camera();        // non-blocking, true when topmaixData got a new packet
+// --- Top camera: see "Camera /field_data" below (camera_begin(), read_camera(), fieldData) ---
 
 // --- Line (from sense core, Serial8) ---
 bool line_flag();                       // true if PIN_0 or PIN_1 is HIGH
@@ -125,11 +111,10 @@ float wrap180(float a);                 // wrap to (-180, 180]
 //   AA s0 s1 s2 s3 found angL angH strL strH chk     chk = sum of bytes [1..9]
 //   s0-s3: lineState, bit = 0 when that sensor sees the line (all 1 = no line)
 //   found: 1 = ball seen; angle 0-359 (0xFFFF if not seen); strength: higher = closer
-// Sent every loop while a line is seen, otherwise at SENSE_TX_HZ.
+// Sent every loop of the sense core (no rate limit): line first, ball = newest IR result.
 #define SENSE_BAUD      921600
 #define SENSE_HDR       0xAA
 #define SENSE_LEN       11
-#define SENSE_TX_HZ     100
 
 static inline uint8_t pkt_sum(const uint8_t* b, int from, int to) {
   uint8_t s = 0;
@@ -185,12 +170,12 @@ bool ir_ball_fresh(uint32_t max_age_ms);
 
 
 // =====================================================================
-// Camera /field_data v2 (Serial3 DMA)
+// Camera /field_data (Serial3 DMA) -- the only camera reader
 // =====================================================================
 // /field_data v2 from the Maix Cam (Serial3, RX by DMA)
 // Angles: deg, robot frame, 0 = right, 90 = front, CCW.
 // Distances: ball = pixel radius from the image centre, goals = cm (camera formula).
-// No packet for CAM_TIMEOUT_MS -> read_camera_v2() clears ball and goals (seen = false).
+// No packet for CAM_TIMEOUT_MS -> read_camera() clears ball and goals (seen = false).
 
 struct FieldObj {
   bool seen = false;
@@ -215,10 +200,10 @@ struct CameraStats {
 extern FieldData fieldData;
 extern CameraStats cameraStats;
 
-// Start Serial3 RX by DMA. Do not use readTopMaix_polar() or camera_dma_begin() after this.
-void camera_v2_begin();
+// Start Serial3 RX by DMA (call once in setup)
+void camera_begin();
 // Parse every byte DMA received since the last call. true if fieldData got a new packet.
-bool read_camera_v2();
+bool read_camera();
 // true if the newest camera packet is younger than max_age_ms
 bool camera_fresh(uint32_t max_age_ms);
 
@@ -481,7 +466,7 @@ static inline void wait_start(const char* name) {
   while (digitalRead(START_BUTTON) == HIGH) {
     update_gyro_sensor();
     read_sense();
-    read_camera_v2();
+    read_camera();
   }
   delay(200);                                    // debounce
   while (digitalRead(START_BUTTON) == LOW) {}    // wait for release

@@ -14,7 +14,7 @@
 
 void setup() {
   core_act_init();
-  camera_v2_begin();
+  camera_begin();
   kicker_begin();
   strategy_begin();
   wait_start("T08 shoot");
@@ -25,7 +25,7 @@ void loop() {
   if (start_pressed()) forceCorner = !forceCorner;
 
   update_gyro_sensor();
-  read_camera_v2();
+  read_camera();
   uint8_t got = read_sense();
   kicker_update();
 

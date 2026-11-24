@@ -13,14 +13,14 @@ static void printObj(const char* name, const FieldObj& o, const char* unit) {
 
 void setup() {
   core_act_init();
-  camera_v2_begin();
+  camera_begin();
   MotorStop();
   drawMessage("T04 cam");
   Serial.println("T04 test_camera_v2");
 }
 
 void loop() {
-  read_camera_v2();
+  read_camera();
 
   static CameraStats prev;
   EVERY_MS(tp, 100) {

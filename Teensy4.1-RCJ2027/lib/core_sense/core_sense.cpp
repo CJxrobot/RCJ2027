@@ -1,6 +1,14 @@
 #include <core_sense.h>
 #include <EEPROM.h>
 
+uint32_t lsUsedMask = 0xFFFFFFFFUL;
+bool lsUseMux2 = true;
+
+void line_sensor_config(bool useMux2, uint32_t usedMask) {
+    lsUseMux2 = useMux2;
+    lsUsedMask = useMux2 ? usedMask : (usedMask & 0x0000FFFFUL);
+}
+
 // out 1-20 -> pin (sense_ir.cpp)
 const uint8_t IR_PINS[IR_COUNT] = {
     12, 11, 10,  9,  8,  7,  6,  5,  4,  3, // out 1-10
@@ -69,26 +77,30 @@ void fast_update_line_sensor() {
         while (micros() - t0 < 10) {}
 
         uint16_t r1 = analogRead(LS_M1);
-        uint16_t r2 = analogRead(LS_M2);
         lsRaw[ch] = r1;
-        lsRaw[ch + 16] = r2;
+        if (r1 < avg_ls[ch]) rawState &= ~(1UL << ch);
 
-        if (r1 < avg_ls[ch])    rawState &= ~(1UL << ch);
-        if (r2 < avg_ls[ch+16]) rawState &= ~(1UL << (ch + 16));
+        if (lsUseMux2) {                       // attack robot: mux 2 not read at all
+            uint16_t r2 = analogRead(LS_M2);
+            lsRaw[ch + 16] = r2;
+            if (r2 < avg_ls[ch+16]) rawState &= ~(1UL << (ch + 16));
+        }
     }
 
     // Bit clears only if below threshold in this scan AND the previous one
-    lineState = prevRaw | rawState | ~LS_USED_MASK;
+    lineState = prevRaw | rawState | ~lsUsedMask;
     prevRaw   = rawState;
 }
 
 // Call every loop after fast_update_line_sensor().
-// Line seen: PIN_0/PIN_1 HIGH, line + ball packet every call
-// No line:   PIN_0/PIN_1 LOW, line + ball packet at SENSE_TX_HZ
+// PIN_0/PIN_1 HIGH when a line is seen, then line + newest ball packet (every call)
 // Returns true if a packet was sent
 bool send_line_state() {
-    return send_sense_packet(lineState, compute_ir_ball());
+    return send_sense_packet(lineState, irBallLast);
 }
+
+IrBall irBallLast;
+void update_ir_ball() { irBallLast = compute_ir_ball(); }
 
 // Call every loop after fast_update_line_sensor().
 // 1st press: LED13 blinks, record min/max of each sensor
@@ -115,7 +127,7 @@ bool calibrate_line_sensor() {
         } else {
             digitalWrite(LED_BUILTIN, LOW);
             for (int i = 0; i < 32; i++) {
-                if (!(LS_USED_MASK & (1UL << i))) continue; // no sensor on this channel
+                if (!(lsUsedMask & (1UL << i))) continue;  // no sensor on this channel
                 avg_ls[i] = (max_ls[i] + min_ls[i]) / 2;
                 Serial.printf("Sensor %d: min=%d, max=%d, avg=%d\n", i, min_ls[i], max_ls[i], avg_ls[i]);
             }
@@ -223,13 +235,10 @@ IrBall compute_ir_ball() {
 }
 
 bool send_sense_packet(uint32_t state, const IrBall& ball) {
-  static uint32_t last = 0;
   bool line = state != 0xFFFFFFFF;
-  digitalWriteFast(PIN_0, line);
+  digitalWriteFast(PIN_0, line);       // interrupt to the act core first
   digitalWriteFast(PIN_1, line);
 
-  uint32_t now = micros();
-  if (!line && now - last < 1000000UL / SENSE_TX_HZ) return false;   // no line: 100 Hz
   if (Serial8.availableForWrite() < SENSE_LEN) { senseTxStats.skipped_full++; return false; }
 
   uint8_t p[SENSE_LEN] = {SENSE_HDR,
@@ -242,6 +251,5 @@ bool send_sense_packet(uint32_t state, const IrBall& ball) {
   Serial8.write(p, SENSE_LEN);
   senseTxStats.pkts++;
   if (line) senseTxStats.line_pkts++;
-  last = now;
   return true;
 }

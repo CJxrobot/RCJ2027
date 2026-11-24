@@ -1,7 +1,6 @@
 #include <core_act.h>
 #include <DMAChannel.h>
 GyroData gyroData;
-TopMaixData topmaixData;
 RobotState robot;
 // --- OLED OBJECT ---
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -14,8 +13,6 @@ static const uint8_t motorPwmPins[MOTOR_COUNT] = MOTOR_PWM_PINS;
 void core_act_init() {
     Serial.begin(115200);
     Serial2.begin(115200);
-    Serial3.begin(115200);
-    Serial3.setTimeout(50); // ms, camera answers once per frame
     Serial8.begin(SENSE_BAUD);            // 921600, same constant on both boards
     pinMode(LED_BUILTIN, OUTPUT);
 
@@ -95,75 +92,6 @@ void update_gyro_sensor(){
     gyroData.az = (int16_t)((buffer[14] << 8) | buffer[13]) * 0.00980665f;
     // Keep reading: drain all queued packets so the newest one wins
   }
-}
-
-// Packet: CC DD found angleL angleH distL distH checksum EE, checksum = sum of bytes [1..6]
-void readTopMaix_polar() {
-  uint8_t buf[9];
-  while (Serial3.available()) Serial3.read(); // drop stale bytes
-  Serial3.write(0xDD);                        // request
-
-  uint8_t checksum = 0;
-  bool ok = Serial3.readBytes(buf, 9) == 9 &&
-            buf[0] == 0xCC && buf[1] == 0xDD && buf[8] == 0xEE;
-  for (int i = 1; i <= 6; i++) checksum += buf[i];
-
-  topmaixData.valid = ok && checksum == buf[7];
-  if (!topmaixData.valid) return;
-
-  topmaixData.goal_found = buf[2];
-  topmaixData.goal_angle = buf[3] | (buf[4] << 8);
-  topmaixData.goal_dist  = buf[5] | (buf[6] << 8);
-}
-
-// ===== Top camera over DMA (Serial3 = LPUART2) =====
-// DMA copies every received byte into a ring buffer, no CPU and no interrupt
-#define CAM_BUF 64 // power of 2, buffer must be aligned to its size
-static volatile uint8_t camRx[CAM_BUF] __attribute__((aligned(CAM_BUF)));
-static DMAChannel camDma;
-
-void camera_dma_begin() {
-  Serial3.begin(115200);                                  // pins + baud rate
-  NVIC_DISABLE_IRQ(IRQ_LPUART2);                          // Serial3 interrupt off,
-  LPUART2_CTRL &= ~(LPUART_CTRL_RIE | LPUART_CTRL_ILIE);  // DMA takes the bytes
-  LPUART2_WATER = LPUART_WATER_RXWATER(0);                // DMA request for every byte
-
-  camDma.begin(true);
-  camDma.source((volatile const unsigned char&)LPUART2_DATA);
-  camDma.destinationCircular(camRx, CAM_BUF);             // wraps around, runs forever
-  camDma.triggerAtHardwareEvent(DMAMUX_SOURCE_LPUART2_RX);
-  camDma.enable();
-  LPUART2_BAUD |= LPUART_BAUD_RDMAE;                      // UART RX -> DMA requests on
-}
-
-// Parse the bytes DMA received since the last call
-bool read_camera() {
-  static uint8_t buf[9];
-  static int n = 0;
-  static uint32_t tail = 0; // next byte to parse
-  bool got = false;
-
-  uint32_t head = (uint32_t)camDma.TCD->DADDR - (uint32_t)camRx; // next byte DMA writes
-  while (tail != head) {
-    uint8_t b = camRx[tail];
-    tail = (tail + 1) % CAM_BUF;
-    if (n == 0 && b != 0xCC) continue;                      // wait for start byte
-    if (n == 1 && b != 0xDD) { n = (b == 0xCC); continue; } // resync
-    buf[n++] = b;
-    if (n < 9) continue;
-
-    n = 0;
-    uint8_t checksum = 0;
-    for (int i = 1; i <= 6; i++) checksum += buf[i];
-    if (buf[8] != 0xEE || checksum != buf[7]) continue;
-
-    topmaixData.valid      = true;
-    topmaixData.goal_found = buf[2];
-    topmaixData.goal_angle = buf[3] | (buf[4] << 8);
-    topmaixData.goal_dist  = buf[5] | (buf[6] << 8);
-    got = true;
-  }
-  return got;
 }
 
 // ===== Line (from sense core) =====
@@ -405,13 +333,13 @@ bool ir_ball_fresh(uint32_t max_age_ms) {
 FieldData fieldData;
 CameraStats cameraStats;
 
-// Same DMA setup as camera_dma_begin() in core_act.cpp, larger ring for 18-byte packets
+// Serial3 (LPUART2) RX by DMA into a ring buffer, parsed without blocking
 #define CAM2_BUF 128 // power of 2, buffer aligned to its size
 static volatile uint8_t cam2Rx[CAM2_BUF] __attribute__((aligned(CAM2_BUF)));
 static DMAChannel cam2Dma;
-static bool cam2Started = false;   // read_camera_v2() does nothing before camera_v2_begin()
+static bool cam2Started = false;   // read_camera() does nothing before camera_begin()
 
-void camera_v2_begin() {
+void camera_begin() {
   Serial3.begin(CAM_BAUD);
   NVIC_DISABLE_IRQ(IRQ_LPUART2);
   LPUART2_CTRL &= ~(LPUART_CTRL_RIE | LPUART_CTRL_ILIE);
@@ -437,7 +365,7 @@ static void decode(FieldObj& o, bool seen, const uint8_t* b, int i) {
   }
 }
 
-bool read_camera_v2() {
+bool read_camera() {
   static uint8_t buf[CAM_LEN];
   static int n = 0;
   static uint32_t tail = 0;
@@ -445,7 +373,7 @@ bool read_camera_v2() {
   bool got = false;
 
   // Not started: the DMA address is not our buffer, so "head" would be garbage and the
-  // loop below would never end (this froze every test that never called camera_v2_begin)
+  // loop below would never end (this froze every test that never called camera_begin)
   if (!cam2Started) return false;
   uint32_t head = ((uint32_t)cam2Dma.TCD->DADDR - (uint32_t)cam2Rx) % CAM2_BUF;
   while (tail != head) {

@@ -136,7 +136,7 @@ static bool leaveLineOn(const UsData& us) {
 
 void setup() {
   core_act_init();
-  camera_v2_begin();
+  camera_begin();
   kicker_begin();
   strategy_begin();
 
@@ -144,7 +144,7 @@ void setup() {
   uint32_t lastDraw = 0;
   while (digitalRead(START_BUTTON) == HIGH) {
     update_gyro_sensor();
-    read_camera_v2();
+    read_camera();
     read_sense();
     kicker_update();
     if (millis() - lastDraw >= 100) {
@@ -172,7 +172,7 @@ void loop() {
   static uint32_t lastUs = 0;
 
   update_gyro_sensor();
-  read_camera_v2();
+  read_camera();
   uint8_t got = read_sense();
   kicker_update();
   if (millis() - lastUs >= US_PERIOD_MS) { lastUs = millis(); us = US_Sensor(); }

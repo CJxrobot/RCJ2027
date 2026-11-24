@@ -65,9 +65,9 @@ float sideLimit(Side& s, uint32_t state) {
 
 // Scale sideways speed by the goal direction from the camera
 float goalAdjust(float vx) {
-  if (!topmaixData.goal_found || topmaixData.goal_angle > 359) return vx;
+  if (!fieldData.back_goal.seen) return vx;   // our own goal (camera back goal)
 
-  int diff = topmaixData.goal_angle - GOAL_CENTER; // < 0 = left, > 0 = right
+  int diff = (int)fieldData.back_goal.angle - GOAL_CENTER; // < 0 = left, > 0 = right
   if (diff > 180)  diff -= 360;
   if (diff < -180) diff += 360;
 
@@ -85,7 +85,7 @@ void drawDebug(uint32_t state) {
   display.setCursor(0, 0);
   display.println("Press BTN to start");
   display.printf("Head  %.1f\n", gyroData.heading);
-  if (topmaixData.goal_found) display.printf("Goal  A%d D%d\n", topmaixData.goal_angle, topmaixData.goal_dist);
+  if (fieldData.back_goal.seen) display.printf("Goal  A%d D%d\n", (int)fieldData.back_goal.angle, fieldData.back_goal.dist);
   else                        display.println("Goal  none");
   display.printf("Flag  %d\n", line_flag());
   display.printf("Front in %c out %c\n", mark(state, FRONT_IN), mark(state, FRONT_OUT));
@@ -97,7 +97,7 @@ void drawDebug(uint32_t state) {
 
 void setup() {
   core_act_init();
-  camera_dma_begin();
+  camera_begin();
 
   // Wait for button 1 showing live sensor data, then run until restart
   MotorStop();
