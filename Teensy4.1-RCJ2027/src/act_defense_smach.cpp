@@ -398,8 +398,9 @@ void setup() {
       display.println("DEFENSE SM  START");
       display.printf("Head %.1f\n", current_heading());
       display.printf("Ball %s %.0f\n", ball_src_name(b.src), b.angle);
-      display.printf("Back goal %s %.0f %u\n", fieldData.back_goal.seen ? "Y" : "-",
-                     fieldData.back_goal.angle, fieldData.back_goal.dist);
+      display.printf("Goal %s %.0f %u>%.0f\n", fieldData.back_goal.seen ? "Y" : "-",
+                     fieldData.back_goal.angle, fieldData.back_goal.dist,      // raw > corrected cm
+                     fieldData.back_goal.dist * goalDistK(fieldData.back_goal.angle));
       display.printf("Line %d Hold %d\n", line_flag(), has_ball());
       display.display();
     }
