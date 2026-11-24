@@ -48,15 +48,13 @@
 #define SPEED       30  // forward / backward on the penalty line
 #define BACK_SPEED  15  // backing off from a side line
 #define FINE_SPEED  15  // small forward / back correction around the ring stop point
-// Camera side brake, per side (the real robot slides further to the RIGHT: field 2026-11-24, and
-// the corner ball angles 60 / 126 say it stops ~4 cm further right; the reference program also
-// stops the right side much earlier). Our goal more than SLOW off 270 -> sideways speed away from
-// it falls linearly to 0 at STOP. MEASURE: robot at the end of the penalty line where it must
-// stop, read "Goal" on the OLED, STOP = |angle - 270|, SLOW = STOP - 25.
-#define DEF_SLOW_GOAL_DEG_R 25.0f // robot right of our goal (goal < 270), moving right
-#define DEF_SIDE_GOAL_DEG_R 50.0f
-#define DEF_SLOW_GOAL_DEG_L 35.0f // robot left of our goal (goal > 270), moving left
-#define DEF_SIDE_GOAL_DEG_L 60.0f
+#define DEF_SLOW_GOAL_DEG 35.0f // camera: back goal more than this off 270 -> sideways move away from it slows ...
+#define DEF_SIDE_GOAL_DEG 60.0f // ... down to 0 here (end of the penalty line)
+// Speed ratio per side for the move toward that end of the penalty line (robot on that side of
+// the goal, moving away from it). The real robot slides out to the RIGHT only (field 2026-11-24):
+// right side slower. 1.0 = no change.
+#define DEF_SIDE_RATIO_R  0.7f
+#define DEF_SIDE_RATIO_L  1.0f
 #define LOCK_HEAD_DEG     10.0f // corner lock only facing 90 +- this (like the reference program)
 // Pushed back into the area (opponent): forward, speed rising (reference program)
 #define RECOVER_SPEED     30.0f // start
@@ -435,15 +433,14 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   if (lockR && want < 0) lockR = false;
   if (lockL && want > 0) lockL = false;
 
-  // Camera angle slow-down: goal more than DEF_SLOW_GOAL_DEG_R / _L off 270 = robot near the end of
+  // Camera angle slow-down: goal more than DEF_SLOW_GOAL_DEG off 270 = robot near the end of
   // the penalty line. Moving further away from the goal: speed falls linearly to 0 at
-  // DEF_SIDE_GOAL_DEG_R / _L. Applied BEFORE the side lines: backing off a side line (in sensor) is a
+  // DEF_SIDE_GOAL_DEG, x DEF_SIDE_RATIO_R / _L for that side. Applied BEFORE the side lines: backing off a side line (in sensor) is a
   // safety move and is never slowed (field 2026-11-24: back-off 15 -> 9 %, robot stuck).
   float g = wrap180(goal.angle - 270.0f);            // robot right of the goal -> g < 0
-  float slow = g < 0 ? DEF_SLOW_GOAL_DEG_R : DEF_SLOW_GOAL_DEG_L;
-  float stop = g < 0 ? DEF_SIDE_GOAL_DEG_R : DEF_SIDE_GOAL_DEG_L;
-  float k = constrain((stop - fabsf(g)) / (stop - slow), 0.0f, 1.0f);
-  if ((g < 0 && v.x > 0) || (g > 0 && v.x < 0)) v.x *= k;
+  float k = constrain((DEF_SIDE_GOAL_DEG - fabsf(g)) / (DEF_SIDE_GOAL_DEG - DEF_SLOW_GOAL_DEG), 0.0f, 1.0f);
+  if (g < 0 && v.x > 0) v.x *= k * DEF_SIDE_RATIO_R;
+  if (g > 0 && v.x < 0) v.x *= k * DEF_SIDE_RATIO_L;
 
   float rightLim = sideLimit(rightSide, state), leftLim = sideLimit(leftSide, state);
   v.x = max(min(v.x, rightLim), -leftLim);           // side lines always win
