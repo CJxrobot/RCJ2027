@@ -20,10 +20,14 @@ rem defense robot: mux 2 line sensors
 set MUX2=0
 echo %PROG% | findstr /i "defense" >nul && set MUX2=1
 
+rem g++ not on PATH (new install, old terminal): look in the usual install folders
+where g++ >nul 2>nul
+if errorlevel 1 call :findgpp
 where g++ >nul 2>nul
 if errorlevel 1 (
   echo g++ not found. Install it once, then open a NEW terminal:
   echo     winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT --source winget
+  echo Check if it is installed:  winget list WinLibs
   exit /b 1
 )
 
@@ -36,3 +40,10 @@ if errorlevel 1 exit /b 1
 
 out\sim_%PROG%.exe %SCEN%
 if not "%SCEN%"=="all" if exist "out\%PROG%_%SCEN%.html" start "" "out\%PROG%_%SCEN%.html"
+exit /b 0
+
+:findgpp
+for /d %%D in ("%LOCALAPPDATA%\Microsoft\WinGet\Packages\BrechtSanders.WinLibs*") do if exist "%%D\mingw64\bin\g++.exe" set "PATH=%%D\mingw64\bin;%PATH%"
+for %%P in ("C:\msys64\ucrt64\bin" "C:\msys64\mingw64\bin" "C:\mingw64\bin" "C:\MinGW\bin") do if exist "%%~P\g++.exe" set "PATH=%%~P;%PATH%"
+where g++ >nul 2>nul && (echo Using g++ from: & where g++)
+exit /b 0
