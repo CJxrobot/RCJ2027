@@ -71,15 +71,27 @@
 #define DODGE_OFFSET_DEG 60.0f // ... by turning the path this much, on the field side (toward 90)
 #define DEFEND_MAX_CM    45.0f // DEFEND: our goal farther than this = pushed out of the area -> RETURN
                                // (defending spots 16-33 cm, far corner of the area ~46 cm)
-// Penalty area from the field spec (cm, from the goal centre on the goal line, line centres)
-#define PA_FRONT_CM      25.0f // front line
+// ----- Camera goal distance correction (measured on the field 2026-11-24) -----
+// The goal distance reads too long when the goal is seen at a slant. Multiply by K, linear
+// between these points (deg off 270 -> K):  0 -> 1.00 (45 read 45), 44 -> 0.81 (corner: read 37,
+// real ~30), 66+ -> 0.61 (beside the goal: read 90, real ~55). Far straight ahead reads a bit
+// short (centre of the field: read 90, real ~110): not corrected.
+#define GOAL_K_DEG1      44.0f
+#define GOAL_K1          0.81f
+#define GOAL_K_DEG2      66.0f
+#define GOAL_K2          0.61f
+// The camera's goal point is ~5 cm inside the goal (defending spot reads 24, not 19), so the
+// penalty area below is measured from that point.
+
+// Penalty area from the field spec (cm, from the camera's goal point, line centres)
+#define PA_FRONT_CM      30.0f // front line (25 from the goal line + 5 to the camera's goal point)
 #define PA_HALF_CM       39.0f // side lines
 #define PA_R_CM          15.0f // rounded front corners
 #define DEPTH_FLOOR_CM   9.5f  // camera: robot centre deeper than this behind the front line -> forward first
                                // (normal spot ~6 cm, fully inside from 10 cm: front 11 cm vs line 1 cm)
 // Field side lines (LEAVE / RETURN): robot x from the camera goal ANGLES (both goals + gyro),
 // speed toward a side line cut exponentially (same law as the library's walls / goals)
-#define FIELD_HALF_LEN_CM 109.5f // goal (camera point) from the field centre
+#define FIELD_HALF_LEN_CM 114.5f // camera's goal point from the field centre (109.5 + 5)
 #define FIELD_HALF_W_CM   78.0f  // side line (centre) from the field centre
 #define SIDE_STOP_CM      14.0f  // robot centre this far from the side line: no more speed toward it
                                  // (robot 11 + half line 1 + 2 margin)
@@ -145,12 +157,21 @@ static float sideLimit(const Side& s, uint32_t state) {
 struct OurGoal { bool known; float angle, dist; };
 
 static bool backGoalOk();
+
+// Slant correction factor for the camera goal distance
+static float goalDistK(float angle) {
+  float off = fabsf(wrap180(angle - 270.0f));
+  if (off <= GOAL_K_DEG1) return 1.0f + (GOAL_K1 - 1.0f) * off / GOAL_K_DEG1;
+  if (off <= GOAL_K_DEG2) return GOAL_K1 + (GOAL_K2 - GOAL_K1) * (off - GOAL_K_DEG1) / (GOAL_K_DEG2 - GOAL_K_DEG1);
+  return GOAL_K2;
+}
+
 static OurGoal ourGoal(const UsData& us) {
   OurGoal g = {false, 270.0f, 0.0f};
   if (backGoalOk()) {
     g.known = true;
     g.angle = fieldData.back_goal.angle;
-    g.dist = fieldData.back_goal.dist;
+    g.dist = fieldData.back_goal.dist * goalDistK(g.angle);   // corrected, used everywhere
   } else if (us.back > 0) {
     g.known = true;
     g.dist = us.back;
@@ -312,9 +333,9 @@ static void slowToSideLines(Vec2& v, const OurGoal& goal) {
 }
 
 // LEAVE: line handling only near the side of the field
-static bool leaveLineOn(const UsData& us) {
+static bool leaveLineOn(const UsData& us, const OurGoal& goal) {
   if (!backGoalOk()) return true;                    // no goal: stay safe
-  if (fieldData.back_goal.dist < PENALTY_ZONE_CM) return false;   // only the penalty line here: go out
+  if (goal.dist < PENALTY_ZONE_CM) return false;     // only the penalty line here: go out
   bool sideGoal = fabsf(wrap180(fieldData.back_goal.angle - 270.0f)) > LINE_SIDE_GOAL_DEG;
   bool usFitted = us.left > 0 || us.right > 0;       // R03 not in yet: goal angle only
   if (!usFitted) return sideGoal;
@@ -490,7 +511,7 @@ void loop() {
 
       slowToSideLines(v, goal);                         // camera: slow down before a side line
 
-      if (leaveLineOn(us)) {
+      if (leaveLineOn(us, goal)) {
         LineCtl line = back_to_field(got & SENSE_GOT_LINE);
         if (line.active) { v = line.v; set_aim(false); set_target_heading(90); set_ramp(false); }
       }
@@ -537,9 +558,9 @@ void loop() {
   Vector_Motion(v.x, v.y, 0);
 
   EVERY_MS(tp, 200) {
-    Serial.printf("%-6s (%s) | ball %-4s %5.1f | goal %s %5.1f %4u cm | line %d | hold %d | v (%4.0f, %4.0f)\n",
+    Serial.printf("%-6s (%s) | ball %-4s %5.1f | goal %s %5.1f %4u cm -> %3.0f cm | line %d | hold %d | v (%4.0f, %4.0f)\n",
                   stateName[st], why, ball_src_name(ball.src), ball.angle,
                   fieldData.back_goal.seen ? "Y" : "-", fieldData.back_goal.angle, fieldData.back_goal.dist,
-                  line_flag(), has_ball(), v.x, v.y);
+                  goal.dist, line_flag(), has_ball(), v.x, v.y);       // raw -> corrected
   }
 }
