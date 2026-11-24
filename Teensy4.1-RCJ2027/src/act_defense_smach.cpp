@@ -13,7 +13,7 @@
 //           (breaks < LEAVE_BREAK_MS ignored)
 //             ball within 90 +- LEAVE_FRONT_DEG for LEAVE_HOLD_MS (3 s), or
 //             robot at a corner of the area, ball 40-80 (right) / 100-140 (left) for
-//             CORNER_HOLD_MS (4 s) (rule 2.5: ball on the neutral spot)          -> LEAVE
+//             DEF_CORNER_HOLD_MS (4 s) (rule 2.5: ball on the neutral spot)          -> LEAVE
 //   LEAVE   leave the penalty area and take the ball
 //           ball held:    shoot_control() (same as the attack robot)
 //           ball 85-95:   rush straight at it, else chase_ball()
@@ -49,14 +49,14 @@
 #define LEAVE_FRONT_DEG  5.0f  // ball within 90 +- this counts as "straight ahead" (85-95)
 #define LEAVE_HOLD_MS    3000  // ... for this long
 #define LEAVE_BREAK_MS   200   // ball out of the window shorter than this (noise): timer keeps running
-// Robot at a corner of the area: our goal more than CORNER_GOAL_DEG off 270. Ball on the
+// Robot at a corner of the area: our goal more than DEF_CORNER_GOAL_DEG off 270. Ball on the
 // neutral spot seen at ~60 (right corner) / ~126 (left corner), field test 2026-11-24.
-#define CORNER_GOAL_DEG  25.0f
-#define CORNER_R_MIN     40.0f // right corner: ball between these angles ...
-#define CORNER_R_MAX     80.0f
-#define CORNER_L_MIN     100.0f // left corner
-#define CORNER_L_MAX     140.0f
-#define CORNER_HOLD_MS   4000  // ... for this long -> LEAVE
+#define DEF_CORNER_GOAL_DEG  25.0f
+#define DEF_CORNER_R_MIN     40.0f // right corner: ball between these angles ...
+#define DEF_CORNER_R_MAX     80.0f
+#define DEF_CORNER_L_MIN     100.0f // left corner
+#define DEF_CORNER_L_MAX     140.0f
+#define DEF_CORNER_HOLD_MS   4000  // ... for this long -> LEAVE
 
 // ----- LEAVE -----
 #define LEAVE_RUSH_SPEED 70.0f // ball 85-95: straight at it
@@ -470,8 +470,8 @@ void loop() {
       float g = wrap180(goal.angle - 270.0f);           // robot right of the goal -> g < 0
       float ba = fmodf(ball.angle + 360.0f, 360.0f);
       bool corner = seenBall &&
-                    ((g <= -CORNER_GOAL_DEG && ba >= CORNER_R_MIN && ba <= CORNER_R_MAX) ||
-                     (g >=  CORNER_GOAL_DEG && ba >= CORNER_L_MIN && ba <= CORNER_L_MAX));
+                    ((g <= -DEF_CORNER_GOAL_DEG && ba >= DEF_CORNER_R_MIN && ba <= DEF_CORNER_R_MAX) ||
+                     (g >=  DEF_CORNER_GOAL_DEG && ba >= DEF_CORNER_L_MIN && ba <= DEF_CORNER_L_MAX));
       if (front || corner) {
         bool kind = !front;                            // front has priority
         if (!frontTiming || kind != timingCorner) { frontTiming = true; frontStart = now; timingCorner = kind; }
@@ -479,7 +479,7 @@ void loop() {
       } else if (frontTiming && now - frontLastIn > LEAVE_BREAK_MS) {
         frontTiming = false;                           // out of the window too long: start again
       }
-      if (frontTiming && now - frontStart >= (timingCorner ? CORNER_HOLD_MS : LEAVE_HOLD_MS)) {
+      if (frontTiming && now - frontStart >= (timingCorner ? DEF_CORNER_HOLD_MS : LEAVE_HOLD_MS)) {
         go(LEAVE, timingCorner ? "ball at the corner 4 s" : "ball in front 3 s"); break;
       }
       // Line sensors only mean something when the robot faces 90: turned -> turn back first
