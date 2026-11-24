@@ -1,12 +1,12 @@
 #include <Arduino.h>
 #include <core_act.h>
 
-// T12b (Act): defense robot as a state machine -- act_defense_smach + mux 1 ring side guard
-// Same as act_defense_smach.cpp, plus (DEFEND only, no memory): the mux 1 ring channels at the
-// robot's sides are the last, innermost guard against sliding out over a side line:
-//   ring right (ch 15, 0, 1) on a line -> sideways at least BACK_SPEED to the left
-//   ring left  (ch 7, 8, 9)  on a line -> sideways at least BACK_SPEED to the right
-//   both -> it is the front line under the robot -> straight back (same as both arms)
+// T12b (Act): defense robot as a state machine -- act_defense_smach + mux 1 whole-ring guard
+// Same as act_defense_smach.cpp, plus (DEFEND only, no memory): the WHOLE mux 1 ring (16 channels,
+// 6.1 cm, inside every arm sensor) must never go over a line. Any ring channel on a line, except
+// the front ones that ride the penalty line (ch RING_FREE_FROM..RING_FREE_TO), pushes the robot
+// away from it: at least BACK_SPEED along the sum of "away" directions (never backward: deeper).
+//   ring left AND right side on a line -> it is the front line under the robot -> straight back
 // LEAVE and RETURN are not changed.
 // Ball: final_ball_data = IR only for now; switch the commented line to use camera + IR.
 //
@@ -170,6 +170,8 @@
 
 #define RING_RIGHT ((1UL << 15) | (1UL << 0) | (1UL << 1))   // mux 1 ring, -22.5 .. 22.5 deg
 #define RING_LEFT  ((1UL << 7) | (1UL << 8) | (1UL << 9))    // mux 1 ring, 157.5 .. 202.5 deg
+#define RING_FREE_FROM 2   // ring channels 2..6 (45 .. 135 deg) may sit on the penalty line ...
+#define RING_FREE_TO   6   // ... (ch 4 is the stop point), every other one is a guard
 
 struct Side { uint32_t mid, in; };
 static const Side rightSide = {M2(14), M2(13)};
@@ -466,10 +468,23 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
     if (lockL && !lockR && seen(state, leftSide.in))  v.x = BACK_SPEED;
   }
 
-  // Mux 1 ring guard (last, innermost, no memory): the robot slid past both arm sensors ->
-  // back in at least BACK_SPEED, whatever the ball, the camera or the corner lock want
-  if (ringR) v.x = min(v.x, -(float)BACK_SPEED);
-  if (ringL) v.x = max(v.x, (float)BACK_SPEED);
+  // Whole-ring guard (last, innermost, no memory): sum the "away" directions of every guard
+  // channel on a line; the robot moves at least BACK_SPEED that way, whatever the ball, the
+  // camera or the corner lock want. Never backward (deeper into the area): y part >= 0.
+  float ax = 0, ay = 0;
+  for (int ch = 0; ch < 16; ch++) {
+    if (ch >= RING_FREE_FROM && ch <= RING_FREE_TO) continue;
+    if (!seen(state, 1UL << ch)) continue;
+    ax -= cosf(ch * 22.5f * DEG_TO_RAD);
+    ay -= sinf(ch * 22.5f * DEG_TO_RAD);
+  }
+  ay = max(ay, 0.0f);
+  float an = hypotf(ax, ay);
+  if (an > 0.01f) {
+    ax /= an; ay /= an;
+    float along = v.x * ax + v.y * ay;
+    if (along < BACK_SPEED) { v.x += (BACK_SPEED - along) * ax; v.y += (BACK_SPEED - along) * ay; }
+  }
 
   // Camera depth floor (rules 2.6 / 2.8): the sensors can be on a side line / curve while the
   // robot is deeper than the front line allows (e.g. at the corner of the area). Deeper than
