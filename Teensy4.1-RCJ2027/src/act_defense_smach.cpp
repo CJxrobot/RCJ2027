@@ -16,7 +16,7 @@
 //             DEF_CORNER_HOLD_MS (4 s) (rule 2.5: ball on the neutral spot)          -> LEAVE
 //   LEAVE   leave the penalty area and take the ball
 //           ball held:    shoot_control() (same as the attack robot)
-//           ball 85-95:   rush straight at it, else chase_ball()
+//           ball 85-95:   rush straight at it; in the area chase_ball(), out of it a slow orbit
 //           once out and near our goal: never drive back into the area
 //           line handling only when the back goal is more than LINE_SIDE_GOAL_DEG off 270
 //           (and, once US_Sensor() is filled, a side ultrasonic < LINE_SIDE_US_CM)
@@ -60,6 +60,7 @@
 
 // ----- LEAVE -----
 #define LEAVE_RUSH_SPEED 70.0f // ball 85-95: straight at it
+#define ORBIT_SPEED      25.0f // LEAVE, out of the area: slow circle around the ball to get it to 90
 #define LEAVE_FAR_SPEED  60.0f // LEAVE speed limit with the ball far (IR closeness 0) ...
 #define LEAVE_NEAR_SPEED 30.0f // ... down to this with the ball close (closeness 1): no running over it
 #define LEAVE_MAX_MS     3000  // longest time out of the penalty area
@@ -148,8 +149,8 @@ static void updateLinePos(uint32_t state) {
 static float defLastMove = 0;
 static bool defPrevRing = false;
 
-// LEAVE only: back sensors saw the line = robot has crossed out of the area
-static bool leaveOut = false;
+// LEAVE only: back sensors saw the line and then left it = robot fully out of the area
+static bool leaveBackSeen = false, leaveOut = false;
 
 // RETURN only: robot beside our goal, going forward first (kept until clearly past, no flicker)
 static bool returnBeside = false;
@@ -208,7 +209,7 @@ static void go(DefState s, const char* reason) {
   frontTiming = false;
   defLastMove = 0;                             // DEFEND starts fresh (no old motion)
   defPrevRing = false;
-  leaveOut = false;
+  leaveOut = leaveBackSeen = false;
   returnBeside = false;
   retLastT = 0;
   retRate = 0;
@@ -236,6 +237,26 @@ static float areaDist(const OurGoal& g) {
   float qx = fabsf(x), cx = PA_HALF_CM - PA_R_CM, cy = PA_FRONT_CM - PA_R_CM;
   if (qx > cx && y > cy) return hypotf(qx - cx, y - cy) - PA_R_CM;   // rounded corner
   return max(qx - PA_HALF_CM, y - PA_FRONT_CM);
+}
+
+static Vec2 polarV(float speed, float deg);
+
+// LEAVE, after leaving the area: circle around the IR ball until it is straight ahead (90),
+// then push. Same thresholds as the library's chase_ball() orbit (which only runs for a camera
+// ball; this robot uses IR only), but slow (ORBIT_SPEED).
+static Vec2 orbitBall(const MergedBall& ball) {
+  if (ball.src == SRC_NONE) return Vec2();
+  float a = fmodf(ball.angle + 360.0f, 360.0f);
+  float off = fabsf(wrap180(a - 90.0f));
+  if (ball.strength >= IR_PUSH_STR && off <= PUSH_DEG) return polarV(ORBIT_SPEED, 90.0f);   // push
+  float dir = a;
+  if (ball.strength > IR_ORBIT_STR && off > CHASE_FRONT_DEG) {
+    float ratio = ball.strength >= IR_ORBIT_FULL_STR ? 1.0f
+                : expf(-IR_ORBIT_DECAY * (IR_ORBIT_FULL_STR - ball.strength));
+    float side = (a > 90.0f + CHASE_FRONT_DEG && a < 270.0f) ? 1.0f : -1.0f;  // around the ball
+    dir = a + side * ORBIT_OFFSET_DEG * ratio;
+  }
+  return polarV(ORBIT_SPEED, dir);
 }
 
 static Vec2 polarV(float speed, float deg) {
@@ -510,8 +531,10 @@ void loop() {
         set_target_heading(shot.heading);
       } else if (ball.src != SRC_NONE && fabsf(wrap180(ball.angle - 90.0f)) <= LEAVE_FRONT_DEG) {
         v = polarV(LEAVE_RUSH_SPEED, ball.angle);
+      } else if (leaveOut) {
+        v = orbitBall(ball);                          // out of the area: slow orbit to get the ball to 90
       } else {
-        v = chase_ball(ball, fieldData);
+        v = chase_ball(ball, fieldData);              // still in the area: straight at the ball (IR)
       }
       if (!shot.active) {                               // slower the closer the ball (IR closeness)
         float lim = LEAVE_FAR_SPEED + (LEAVE_NEAR_SPEED - LEAVE_FAR_SPEED) * ball.closeness;
@@ -519,11 +542,12 @@ void loop() {
         if (sp > lim) { v.x *= lim / sp; v.y *= lim / sp; }
       }
 
-      if (seen(state, BACK)) leaveOut = true;           // robot has crossed out of the area
+      if (seen(state, BACK)) leaveBackSeen = true;               // back sensors on the line ...
+      else if (leaveBackSeen) leaveOut = true;                   // ... and past it: fully out
       // Close to our goal after leaving: never drive back into the area (rules 2.6 / 2.8).
       // Block the move toward any arm that sees a line.
       if (leaveOut && goal.dist < PENALTY_ZONE_CM) {
-        if (seen(state, BACK))                             v.y = max(v.y, 0.0f);
+        v.y = max(v.y, 0.0f);                             // never backward this close to our goal
         if (seen(state, FRONT_IN | FRONT_OUT))             v.y = min(v.y, 0.0f);
         if (seen(state, rightSide.mid | rightSide.in))     v.x = min(v.x, 0.0f);
         if (seen(state, leftSide.mid | leftSide.in))       v.x = max(v.x, 0.0f);
