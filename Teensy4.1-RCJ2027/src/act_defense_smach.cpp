@@ -73,6 +73,8 @@
 #define PA_FRONT_CM      25.0f // front line
 #define PA_HALF_CM       39.0f // side lines
 #define PA_R_CM          15.0f // rounded front corners
+#define DEPTH_FLOOR_CM   9.5f  // camera: robot centre deeper than this behind the front line -> forward first
+                               // (normal spot ~8 cm, fully inside from 10 cm: front 11 cm vs line 1 cm)
 #define RETURN_TURN_DEG  20.0f // DEFEND / RETURN: heading more than this off 90: stop and turn first
 
 // Sensors as lineState bits (mux 2 channel + 16), same as act_defense
@@ -196,7 +198,7 @@ static bool backGoalOk() {
 }
 
 // DEFEND: penalty-line following + sideways toward the ball (or the goal centre)
-static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
+static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& goal) {
   Vec2 v;
 
   // Left AND right side sensors see a line: it is the front line under the robot, not the
@@ -249,6 +251,17 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
     if (g >  DEF_SIDE_GOAL_DEG) v.x = max(v.x, 0.0f);
   }
   defBlocked = (wantX > 0 && v.x <= 0) || (wantX < 0 && v.x >= 0);
+
+  // Camera depth floor (rules 2.6 / 2.8): the sensors can be on a side line / curve while the
+  // robot is deeper than the front line allows (e.g. at the corner of the area). Deeper than
+  // DEPTH_FLOOR_CM behind the FRONT line: come forward first, no sliding toward the middle
+  // (there the whole robot would be inside the area).
+  float gx = -goal.dist * cosf(goal.angle * DEG_TO_RAD);     // robot x from the goal centre
+  float gy = -goal.dist * sinf(goal.angle * DEG_TO_RAD);     // robot y from the goal line
+  if (gy < PA_FRONT_CM - DEPTH_FLOOR_CM) {
+    v.y = max(v.y, (float)SPEED);
+    if ((gx > 0 && v.x < 0) || (gx < 0 && v.x > 0)) v.x = 0;
+  }
   return v;
 }
 
@@ -395,7 +408,7 @@ void loop() {
         if (areaDist(goal) > 0) { go(RETURN, "back sensor on the line"); break; }
         linePos = LP_UNKNOWN;          // camera: robot inside = goal / side line behind it -> forward
       }
-      v = defendMotion(state, ball);
+      v = defendMotion(state, ball, goal);
       break;
     }
 
