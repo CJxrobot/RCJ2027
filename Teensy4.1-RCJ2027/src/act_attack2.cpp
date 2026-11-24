@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <core_act.h>
 
-// T11b (Act): attack robot -- act_attack + IR orbit + line slow-down + aim-before-kick
+// T11b (Act): attack robot -- act_attack + IR orbit + line slow-down
 // (act_attack.cpp is not changed)
 // Hardware: mux 1 ring only (Sense USE_MUX2 0), IR, camera, 4 ultrasonic, kicker.
 //
@@ -9,9 +9,9 @@
 //   picked up -> motors off
 //   line on   -> back_to_field()                          (highest priority, as act_attack)
 //   else:
-//     corner shot: library shoot_control() (back up, aim, kick)
-//     ball held:   attackShot(): turn to the front goal FIRST, kick only when it is within
-//                  AIM_KICK_DEG of the front (goal not seen: push and kick after KICK_HOLD_MS)
+//     ball held / corner shot: library shoot_control(), same as the defense LEAVE:
+//       push forward while turning to the front goal, kick after KICK_HOLD_MS (the kick
+//       happens during the turn); corner: back up, aim, kick
 //     else chase the IR ball (attackChase, basic):
 //       no ball             -> library chase_ball() (back home toward our goal)
 //       ball 90 +- PUSH_DEG -> straight forward at PUSH_SPEED_ATK
@@ -75,15 +75,11 @@
 #define FIELD_HALF_W_CM  78.0f // centre to the side line
 #define FIELD_HALF_LEN_CM 114.5f // centre to the camera goal point (5 cm inside the goal)
 
-// ----- Shot: turn first, then kick -----
-#define AIM_KICK_DEG     8.0f  // kick only when the front goal is within 90 +- this
-#define AIM_PUSH_ATK     40.0f // forward while turning with the ball (slower than the library 80)
-
 static const bool usUse[4] = {US_USE_FRONT, US_USE_RIGHT, US_USE_BACK, US_USE_LEFT};
 static const float usDir[4] = {90.0f, 0.0f, 270.0f, 180.0f};    // front, right, back, left
 
-enum AtkMode : uint8_t { M_LINE, M_SHOT, M_AIM, M_NONE, M_PUSH, M_CHASE, M_ORBIT };
-static const char* modeName[] = {"LINE", "CORNER", "AIM", "NOBALL", "PUSH", "CHASE", "ORBIT"};
+enum AtkMode : uint8_t { M_LINE, M_SHOT, M_NONE, M_PUSH, M_CHASE, M_ORBIT };
+static const char* modeName[] = {"LINE", "SHOT", "NOBALL", "PUSH", "CHASE", "ORBIT"};
 static AtkMode mode = M_NONE;
 
 static Vec2 polarV(float speed, float deg) {
@@ -175,30 +171,6 @@ static void usLastLine(Vec2& v, const MergedBall& ball, const Vec2& last) {
     float line = d - US_WALL_TO_LINE_CM - moving * CM_S_PER_PCT * US_LAG_S;   // where it is now
     cutToward(v, usDir[i], expf(-(line - US_LINE_STOP_CM) / US_LINE_LAMBDA_CM));
   }
-}
-
-// Ball held, not a corner: turn to the front goal first, kick when it is in front
-static Vec2 attackShot() {
-  static bool kicked = false, hadBall = false;
-  static uint32_t holdStart = 0;
-  bool ball = has_ball();
-  if (ball && !hadBall) { holdStart = millis(); kicked = false; }
-  hadBall = ball;
-  Vec2 v;
-  const FieldObj& g = fieldData.front_goal;
-  if (goalOk(g)) {
-    float err = wrap180(g.angle - 90.0f);
-    set_aim(true);
-    set_target_heading(current_heading() + err);
-    v.y = AIM_PUSH_ATK;
-    if (!kicked && fabsf(err) <= AIM_KICK_DEG && millis() - holdStart >= KICK_HOLD_MS) kicked = kicker_fire();
-  } else {                                                      // no goal: as the library
-    set_aim(false);
-    set_target_heading(90);
-    v.y = NOGOAL_PUSH_SPEED;
-    if (!kicked && millis() - holdStart >= KICK_HOLD_MS) kicked = kicker_fire();
-  }
-  return v;
 }
 
 // IR only: IR angle + IR strength
@@ -300,22 +272,12 @@ void loop() {
     set_aim(false);
     set_target_heading(90);
   } else {
-    // Corner shot: the library sequence (it keeps its own state while it runs)
-    static bool cornerShot = false;
-    if (has_ball() && in_corner(fieldData)) cornerShot = true;
-    ShootCtl shot;
-    if (cornerShot) {
-      shot = shoot_control(fieldData);
-      if (!shot.active) cornerShot = false;
-    }
+    ShootCtl shot = shoot_control(fieldData);              // as the defense LEAVE
     if (shot.active) {
       mode = M_SHOT;
       v = shot.v;
       set_aim(shot.aiming);
       set_target_heading(shot.heading);
-    } else if (has_ball()) {
-      mode = M_AIM;
-      v = attackShot();
     } else {
       set_aim(false);
       set_target_heading(90);
