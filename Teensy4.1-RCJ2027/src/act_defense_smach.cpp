@@ -428,17 +428,16 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   if (lockR && want < 0) lockR = false;
   if (lockL && want > 0) lockL = false;
 
-  float rightLim = sideLimit(rightSide, state), leftLim = sideLimit(leftSide, state);
-  v.x = max(min(v.x, rightLim), -leftLim);           // side lines always win
-
-  // Camera guard: goal far off to one side = robot near the end of the penalty line,
-  // do not move further away from the goal (replaces the old 300 ms memory)
   // Camera angle slow-down: goal more than DEF_SLOW_GOAL_DEG off 270 = robot near the end of
   // the penalty line. Moving further away from the goal: speed falls linearly to 0 at
-  // DEF_SIDE_GOAL_DEG (the line sensors are only the last safety).
+  // DEF_SIDE_GOAL_DEG. Applied BEFORE the side lines: backing off a side line (in sensor) is a
+  // safety move and is never slowed (field 2026-11-24: back-off 15 -> 9 %, robot stuck).
   float g = wrap180(goal.angle - 270.0f);            // robot right of the goal -> g < 0
   float k = constrain((DEF_SIDE_GOAL_DEG - fabsf(g)) / (DEF_SIDE_GOAL_DEG - DEF_SLOW_GOAL_DEG), 0.0f, 1.0f);
   if ((g < 0 && v.x > 0) || (g > 0 && v.x < 0)) v.x *= k;
+
+  float rightLim = sideLimit(rightSide, state), leftLim = sideLimit(leftSide, state);
+  v.x = max(min(v.x, rightLim), -leftLim);           // side lines always win
 
   // Locked: no sideways and no backward move (loop() cuts the motors with MotorStop() when
   // nothing is left), except an in sensor on the side line: the robot slid past, move back in
@@ -753,11 +752,11 @@ void loop() {
   else Vector_Motion(v.x, v.y, 0);
 
   EVERY_MS(tp, 200) {
-    Serial.printf("%-6s (%s) | ball %-4s %5.1f | goal %s %5.1f %4u > %3.0f cm | line %d | hold %d | "
+    Serial.printf("%-6s (%s) | ball %-4s %5.1f | goal %s %5.1f %4u > %3.0f cm | line %d %08lX | hold %d | "
                   "us R %3.0f B %3.0f L %3.0f | lock %c%c | v (%4.0f, %4.0f)\n",
                   stateName[st], why, ball_src_name(ball.src), ball.angle,
                   fieldData.back_goal.seen ? "Y" : "-", fieldData.back_goal.angle, fieldData.back_goal.dist,
-                  goal.dist, line_flag(), has_ball(), usCm(US_N_RIGHT), usCm(US_N_BACK), usCm(US_N_LEFT),
+                  goal.dist, line_flag(), state, has_ball(), usCm(US_N_RIGHT), usCm(US_N_BACK), usCm(US_N_LEFT),
                   lockL ? 'L' : '-', lockR ? 'R' : '-', v.x, v.y);       // raw -> corrected
   }
 }
