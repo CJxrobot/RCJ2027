@@ -4,6 +4,7 @@
 // T12 (Act): defense robot as a state machine
 // Ball: final_ball_data = IR only for now; switch the commented line to use camera + IR.
 //
+//   DEFEND  back sensor on a line (robot outside the area)                       -> RETURN
 //   DEFEND  stay BEHIND the penalty line: line kept between F_in and F_out (front sensors)
 //           ball seen:    move sideways to keep the ball straight ahead
 //           no ball:      move sideways until the back goal is at 270 (in front of our goal)
@@ -14,7 +15,8 @@
 //           line handling only when the back goal is more than LINE_SIDE_GOAL_DEG off 270
 //           (and, once US_Sensor() is filled, a side ultrasonic < LINE_SIDE_US_CM)
 //           ball lost / ball behind / too far from our goal / LEAVE_MAX_MS over  -> RETURN
-//   RETURN  drive toward our goal, go around the ball if it is in the way,
+//   RETURN  drive toward our goal (camera), go around the ball if it is in the way;
+//           goal beside the robot (0 / 180 +- RETURN_SIDE_DEG): forward first, then to the goal
 //           a FRONT sensor sees the line (robot behind it), or
 //           camera: our goal closer than RETURN_DONE_CM (inside the area)        -> DEFEND
 //
@@ -52,6 +54,7 @@
 
 // ----- RETURN -----
 #define RETURN_SPEED     50.0f
+#define RETURN_SIDE_DEG  30.0f // our goal within 0 / 180 +- this (robot beside the goal): go forward first
 #define DODGE_DEG        30.0f // ball within this of the goal direction: go around it
 #define DODGE_OFFSET_DEG 60.0f // ... by turning the path this much away from the ball
 #define DEFEND_MAX_CM    45.0f // DEFEND: our goal farther than this = pushed out of the area -> RETURN
@@ -333,6 +336,8 @@ void loop() {
         frontTiming = false;                       // out of the window too long: start again
       }
       if (frontTiming && now - frontStart >= LEAVE_HOLD_MS) { go(LEAVE, "ball in front 3 s"); break; }
+      // Back sensor on a line: robot is outside, the line is behind it -> camera brings it back
+      if (seen(state, BACK)) { go(RETURN, "back sensor on the line"); break; }
       v = defendMotion(state, ball);
       break;
     }
@@ -375,7 +380,11 @@ void loop() {
       }
 
       float dir = goal.angle;
-      if (ball.src != SRC_NONE) {                              // ball in the way: go around it
+      bool besideGoal = fabsf(wrap180(goal.angle)) < RETURN_SIDE_DEG ||
+                        fabsf(wrap180(goal.angle - 180.0f)) < RETURN_SIDE_DEG;
+      if (besideGoal) {
+        dir = 90.0f;                                           // beside our goal: forward first,
+      } else if (ball.src != SRC_NONE) {                       // then to the goal; ball in the way: go around
         float d = wrap180(ball.angle - dir);
         if (fabsf(d) < DODGE_DEG) dir += d > 0 ? -DODGE_OFFSET_DEG : DODGE_OFFSET_DEG;
       }
