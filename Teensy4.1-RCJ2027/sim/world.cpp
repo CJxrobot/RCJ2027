@@ -685,10 +685,41 @@ int main(int argc, char** argv) {
   if (!strcmp(want, "all")) {                    // attack programs: atk_* scenarios, others: the rest
     int fails = 0;
     bool atk = strstr(SIM_PROG, "attack") != nullptr;
+    // index page: every scenario with a link and its events (goal / rule / kick)
+    std::string rows;
     for (const Scenario& s : scenarios) {
       if ((strncmp(s.name, "atk_", 4) == 0) != atk) continue;
       std::string cmd = std::string("\"") + argv[0] + "\" " + s.name;
-      fails += system(cmd.c_str()) != 0;
+      FILE* p = popen(cmd.c_str(), "r");
+      if (!p) { fails++; continue; }
+      std::string ev;
+      char line[512];
+      while (fgets(line, sizeof line, p)) {
+        fputs(line, stdout);
+        const char* k = strstr(line, "[SIM] ");
+        if (k && (strstr(k, "GOAL") || strstr(k, "RULE") || strstr(k, "KICK"))) {
+          std::string t = line;
+          while (!t.empty() && (t.back() == '\n' || t.back() == '\r')) t.pop_back();
+          size_t a = t.find_first_not_of(' ');
+          bool bad = strstr(k, "RULE") || strstr(k, "OWN GOAL");
+          ev += std::string(bad ? "<b class=bad>" : "<span>") + t.substr(a == std::string::npos ? 0 : a) +
+                (bad ? "</b>" : "</span>") + "<br>";
+        }
+      }
+      fails += pclose(p) != 0;
+      std::string f = std::string(SIM_PROG) + "_" + s.name + ".html";
+      rows += "<tr><td><a href=\"" + f + "\">" + s.name + "</a></td><td>" + s.desc + "</td><td>" +
+              (ev.empty() ? "-" : ev) + "</td></tr>\n";
+    }
+    std::string idx = std::string("out/") + SIM_PROG + "_all.html";
+    FILE* o = fopen(idx.c_str(), "wb");
+    if (o) {
+      fprintf(o, "<!DOCTYPE html><meta charset=utf-8><title>%s</title><style>body{font:14px sans-serif;margin:20px}"
+                 "td{border-bottom:1px solid #ddd;padding:4px 8px;vertical-align:top}.bad{color:#c00}"
+                 "span{color:#070}</style><h2>%s: all scenarios</h2><p>Click a name to play it. "
+                 "Red = rule event / own goal.</p><table>%s</table>", SIM_PROG, SIM_PROG, rows.c_str());
+      fclose(o);
+      printf("\nAll scenarios: %s\n", idx.c_str());
     }
     return fails;
   }

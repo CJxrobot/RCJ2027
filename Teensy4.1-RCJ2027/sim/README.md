@@ -64,7 +64,7 @@ chmod +x run.sh      # 只要第一次
 | 指令（Windows 用 `.\run.bat`，其他用 `./run.sh`） | 作用 |
 |---|---|
 | `run.bat` | act_defense_smach，全部防守情境 |
-| `run.bat act_defense_smach2` | 指定程式，全部情境 |
+| `run.bat act_defense_smach2` | 指定程式，全部情境；跑完打開 `out/<程式>_all.html`（全部情境的清單，點名字播放） |
 | `run.bat act_defense_smach2 corner_unlock` | 只跑一個情境（Windows 會自動打開結果） |
 | `run.bat act_attack2` | 攻擊程式：只跑 `atk_*` 情境 |
 | `run.bat act_defense_smach2 xxx` | 打錯名字會列出全部情境和說明 |
@@ -74,7 +74,8 @@ chmod +x run.sh      # 只要第一次
 名字含 `defense` 的會開 mux 2 線感測器，其他只有 mux 1。
 
 ### 看結果
-- 輸出在 `out/<程式>_<情境>.html`，用瀏覽器打開：Play / 拖時間軸。
+- 跑全部情境：`out/<程式>_all.html` 是總表（每個情境的進球 / 違規 / 踢球，紅字 = 違規或烏龍球），點名字打開那個情境。Windows 會自動打開它。
+- 每個情境在 `out/<程式>_<情境>.html`，用瀏覽器打開：Play / 拖時間軸。
 - `...html#t=3.5` 會停在 3.5 秒。
 - 下面的 Console 是程式從 Serial 印出來的東西（和實機一樣），加上時間。
 - `[SIM]` 開頭的是模擬器自己的訊息：

@@ -40,6 +40,7 @@ if errorlevel 1 exit /b 1
 
 out\sim_%PROG%.exe %SCEN%
 if not "%SCEN%"=="all" if exist "out\%PROG%_%SCEN%.html" start "" "out\%PROG%_%SCEN%.html"
+if "%SCEN%"=="all" if exist "out\%PROG%_all.html" start "" "out\%PROG%_all.html"
 exit /b 0
 
 :findgpp
