@@ -289,6 +289,7 @@ void FC_Vector_Motion(float WVx, float WVy, float target_heading) {
 LineData lineData;
 IrBallData irBall;
 SenseLinkStats senseLinkStats;
+SenseUsData senseUs;
 
 uint8_t read_sense() {
   static uint8_t buf[SENSE_LEN];
@@ -297,13 +298,20 @@ uint8_t read_sense() {
 
   while (Serial8.available()) {
     uint8_t b = Serial8.read();
-    if (n == 0 && b != SENSE_HDR) { senseLinkStats.junk++; continue; }
+    if (n == 0 && b != SENSE_HDR && b != SENSE_US_HDR) { senseLinkStats.junk++; continue; }
     buf[n++] = b;
     if (n < SENSE_LEN) continue;
     n = 0;
 
     if (pkt_sum(buf, 1, 9) != buf[10]) { senseLinkStats.bad++; continue; }
     uint32_t now = millis();
+    if (buf[0] == SENSE_US_HDR) {                       // ultrasonic: only stored
+      for (int i = 0; i < 4; i++) senseUs.cm[i] = pkt_u16(buf, 1 + 2 * i) * 0.1f;
+      senseUs.t_ms = now;
+      senseLinkStats.us_pkts++;
+      got |= SENSE_GOT_US;
+      continue;
+    }
     lineData.state = buf[1] | (buf[2] << 8) | (buf[3] << 16) | ((uint32_t)buf[4] << 24);
     lineData.t_ms = now;
     uint16_t a = pkt_u16(buf, 6);
@@ -318,8 +326,9 @@ uint8_t read_sense() {
   }
   // Sense core stopped or unplugged: forget the ball and the line
   uint32_t now = millis();
-  if (!got && irBall.t_ms != 0 && now - irBall.t_ms > IR_TIMEOUT_MS) irBall.found = false;
-  if (!got && lineData.t_ms != 0 && now - lineData.t_ms > IR_TIMEOUT_MS) lineData.state = 0xFFFFFFFF;
+  bool linePkt = got & SENSE_GOT_PKT;
+  if (!linePkt && irBall.t_ms != 0 && now - irBall.t_ms > IR_TIMEOUT_MS) irBall.found = false;
+  if (!linePkt && lineData.t_ms != 0 && now - lineData.t_ms > IR_TIMEOUT_MS) lineData.state = 0xFFFFFFFF;
   return got;
 }
 

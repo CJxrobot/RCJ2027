@@ -100,8 +100,12 @@ bool us_update();                    // non-blocking, call every loop; true when
 //   s0-s3: lineState, bit = 0 when that sensor sees the line (all 1 = no line)
 //   found: 1 = ball seen; angle 0-359 (0xFFFF if not seen); strength: higher = closer
 // Sent every loop of the sense core (no rate limit): line first, ball = newest IR result.
+// Ultrasonic in its own packet (same length), sent when a reading finishes (us_update() true):
+//   AB fL fH rL rH bL bH lL lH 0 chk     chk = sum of bytes [1..9]
+//   f / r / b / l = usDistCm H1 front, H2 right, H3 back, H4 left, unit 0.1 cm, 0 = no reading
 #define SENSE_BAUD      921600
 #define SENSE_HDR       0xAA
+#define SENSE_US_HDR    0xAB
 #define SENSE_LEN       11
 
 static inline uint8_t pkt_sum(const uint8_t* b, int from, int to) {
@@ -139,6 +143,9 @@ extern IrBall irBallLast;      // newest ball, sent in every packet
 // Sent on every call, no rate limit. Skipped only if Serial8 has no room for the whole packet.
 // send_line_state() calls this with lineState and irBallLast. Returns true if sent.
 bool send_sense_packet(uint32_t state, const IrBall& ball);
+
+// Send usDistCm[] (AB packet above). Skipped if Serial8 has no room. Returns true if sent.
+bool send_us_packet();
 
 // Counters for test programs
 struct SenseTxStats {

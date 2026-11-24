@@ -7,6 +7,7 @@
 //   1. scan the line sensors
 //   2. PIN_0 / PIN_1 + packet to the act core at once (line + newest ball), no rate limit
 //   3. read the IR ball (~1 ms), sent in the next packet
+//   4. ultrasonic H1-H4 (non-blocking): AB packet when a reading finishes (~33/s)
 // LINE_SCAN_BUTTON (pin 36): line calibration (only the channels in use)
 
 #define USE_MUX2 1   // 1 = defense robot (mux 1 + mux 2), 0 = attack robot (mux 1 only, mux 2 not read)
@@ -60,6 +61,7 @@ void setup() {
   analogWriteFrequency(LS_BRIGHTNESS, 20000);
   analogWrite(LS_BRIGHTNESS, 105);   // same as line_sensing.cpp calibration (0-255)
   line_sensor_config(USE_MUX2, ~(M2_UNUSED | M2_IGNORE));
+  us_begin();
 }
 
 void loop() {
@@ -70,6 +72,7 @@ void loop() {
   digitalWriteFast(LED_BUILTIN, lineState != 0xFFFFFFFF);
 
   update_ir_ball();                          // 3. ball, goes out with the next packet
+  if (us_update()) send_us_packet();         // 4. ultrasonic
 
   static uint32_t lastPrint = 0;
   if (DEBUG && millis() - lastPrint >= 100) {
