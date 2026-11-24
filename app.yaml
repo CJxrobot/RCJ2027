@@ -1,0 +1,8 @@
+id: rcap1124
+name: rcap1124
+version: 1.0.0
+author: rcap1124
+icon: ''
+desc: rcap1124
+files:
+  - goal_ball_detection.py
