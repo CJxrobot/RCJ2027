@@ -64,7 +64,13 @@
                                // (penalty area reaches ~46 cm from the goal, field side lines >= 78 cm)
 
 // ----- RETURN -----
-#define RETURN_SPEED     50.0f
+#define RETURN_SPEED     50.0f // top speed
+// PD slow-down toward the stop point (ring on the line, centre RING_STOP_CM inside the line),
+// distance from the camera (corrected). speed = KP * cm to go + KD * (cm/s, < 0 while closing)
+// clamped to FINE_SPEED .. RETURN_SPEED. No I term: it would push past the stop point.
+#define RETURN_KP        1.0f   // % per cm to go   (50 cm -> 50 %, 15 cm -> 15 %)
+#define RETURN_KD        0.1f   // % per cm/s       (closing at 150 cm/s -> -15 %)
+#define RING_STOP_CM     6.0f   // ring sensor 6.1 cm ahead of the centre
 #define RETURN_SIDE_DEG  30.0f // our goal within 0 / 180 +- this (robot beside the goal): go forward first
 #define RETURN_SIDE_HYST 10.0f // ... until the goal is more than RETURN_SIDE_DEG + this away from 0 / 180
 #define DODGE_DEG        30.0f // ball within this of the goal direction: go around it
@@ -141,6 +147,9 @@ static bool leaveOut = false;
 
 // RETURN only: robot beside our goal, going forward first (kept until clearly past, no flicker)
 static bool returnBeside = false;
+// RETURN only: PD slow-down state (cm to go, its rate from camera updates)
+static float retLastE = 0, retRate = 0;
+static uint32_t retLastT = 0;
 
 // Side line: in sees it -> back off, only mid -> stop there, none -> free (no memory, no timer)
 static float sideLimit(const Side& s, uint32_t state) {
@@ -195,6 +204,8 @@ static void go(DefState s, const char* reason) {
   defPrevRing = false;
   leaveOut = false;
   returnBeside = false;
+  retLastT = 0;
+  retRate = 0;
   if (s == RETURN) linePos = LP_UNKNOWN;       // old line memory may be wrong (pushed): find it again
   why = reason;
   Serial.printf("%lu ms: -> %s (%s)\n", millis(), stateName[s], reason);
@@ -547,10 +558,21 @@ void loop() {
           dir = fabsf(wrap180(a - 90.0f)) < fabsf(wrap180(b - 90.0f)) ? a : b;
         }
       }
-      // Coming in: a back sensor or the ring is on a line -> slow, so it stops on the line
-      // and does not slide fully into the area (rules 2.6 / 2.8)
-      bool onLine = seen(state, BACK | RING_ALL);
-      v = polarV(onLine ? FINE_SPEED : RETURN_SPEED, dir);
+      // PD slow-down: the camera goal only changes every few frames, so the rate is measured
+      // between changes of the distance (smoothed)
+      float toGo = areaDist(goal) + RING_STOP_CM;               // cm from the stop point
+      if (retLastT == 0) { retLastE = toGo; retLastT = now; }
+      else if (toGo != retLastE && now > retLastT) {
+        float rate = (toGo - retLastE) * 1000.0f / (now - retLastT);
+        retRate = 0.5f * retRate + 0.5f * rate;
+        retLastE = toGo;
+        retLastT = now;
+      }
+      float speed = constrain(RETURN_KP * toGo + RETURN_KD * retRate, (float)FINE_SPEED, RETURN_SPEED);
+      if (returnBeside) speed = RETURN_SPEED;                   // going forward, away from the goal
+      // Coming in: a back sensor or the ring is on a line -> slowest
+      if (seen(state, BACK | RING_ALL)) speed = FINE_SPEED;
+      v = polarV(speed, dir);
       slowToSideLines(v, goal);                         // camera: slow down before a side line
       break;
     }
