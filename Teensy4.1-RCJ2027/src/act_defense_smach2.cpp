@@ -8,6 +8,8 @@
 // away from it: at least BACK_SPEED along the sum of "away" directions (never backward: deeper).
 //   ring left AND right side on a line -> it is the front line under the robot -> straight back
 // LEAVE and RETURN are not changed by the ring guard.
+// Collisions (2026-11-24): corner lock released when the camera says the robot was pushed back
+// toward our goal; ring lost while standing still -> the camera says which way it was moved.
 // Also (2026-11-24): LEAVE up to 4 s; every move at least MIN_SPEED (15 %); back sensor on a line
 // -> camera decides front line (RETURN) / deep (forward) with BACK_LINE_SPLIT_CM; RETURN backward
 // is never cut below FINE_SPEED by the back ultrasonic while the camera says outside the line.
@@ -66,6 +68,8 @@
 #define DRIFT_K_R         0.10f // moving right (estimate, measure)
 #define DRIFT_K_L         0.0f  // moving left (measure)
 #define LOCK_HEAD_DEG     10.0f // corner lock only facing 90 +- this (like the reference program)
+#define LOCK_PUSH_DEG     5.0f  // locked robot moved this much back toward our goal (camera angle) =
+                                // pushed in by an opponent -> unlock (field 2026-11-24: stuck inside)
 // Pushed back into the area (opponent): forward, speed rising (reference program)
 // Smallest move: a speed above 0 but under this does not move the real robot (stuck on the
 // field 2026-11-24). Any move slower than this (not 0) is raised to it, keeping its direction.
@@ -213,6 +217,7 @@ static float defPrevVy = 0;           // forward / back speed asked last loop
 
 // DEFEND only: corner lock per side, pushed-back recovery
 static bool lockR = false, lockL = false;
+static float lockGoalOff = 0;        // largest |goal angle - 270| while locked (camera)
 static uint8_t pushSeq = 0;          // 1 = ring had the line, 2 = then F_out had it (line moving out)
 static bool recovering = false;
 static uint32_t recoverStart = 0;
@@ -403,7 +408,9 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   // Forward / back: front ring sensor on the line (robot partly outside the area, rules 2.6 / 2.8)
   bool ring = seen(state, RING_FRONT), inFront = seen(state, FRONT_IN), out = seen(state, FRONT_OUT);
   if (!ring && defPrevRing && !inFront && !out)                     // ring just lost it
-    linePos = defLastMove < 0 ? LP_AHEAD : LP_OVER;
+    // We were not moving forward / back: an opponent moved us -> the camera says which way
+    linePos = defPrevVy != 0 ? (defLastMove < 0 ? LP_AHEAD : LP_OVER)
+                             : (areaDist(goal) < -RING_STOP_CM ? LP_AHEAD : LP_OVER);
   defPrevRing = ring;
 
   // Pushed back (reference program): the line moved ring -> F_out -> past F_out, i.e. the robot
@@ -454,9 +461,20 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   // Corner lock (reference program): facing 90, a front sensor and one side arm on lines
   // = corner of the area -> lock that side. Unlocked only when the robot wants to go the
   // other way (moving direction opposite to the locked side).
+  // Collision: pushed back toward our goal while locked (camera angle LOCK_PUSH_DEG smaller than
+  // the farthest point) -> unlock, the robot goes out to the ball again.
+  float goalOff = fabsf(wrap180(goal.angle - 270.0f));
   if (fabsf(wrap180(current_heading() - 90.0f)) <= LOCK_HEAD_DEG && seen(state, FRONT_ANY)) {
+    if ((rightSeen && !lockR) || (leftSeen && !lockL)) lockGoalOff = goalOff;
     if (rightSeen) lockR = true;
     if (leftSeen)  lockL = true;
+  }
+  if (lockR || lockL) {
+    lockGoalOff = max(lockGoalOff, goalOff);
+    if (goalOff < lockGoalOff - LOCK_PUSH_DEG) {
+      lockR = lockL = false;
+      Serial.printf("%lu ms: pushed in at the corner: unlock\n", millis());
+    }
   }
   if (lockR && want < 0) lockR = false;
   if (lockL && want > 0) lockL = false;
