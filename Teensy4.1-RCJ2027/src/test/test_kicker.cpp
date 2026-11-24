@@ -2,7 +2,7 @@
 #include <core_act.h>
 
 // T05 (Act): kicker only, no motors.
-// Pin 38: LOW = ball, HIGH = no ball (INPUT_PULLUP, same as act_kicker_ball.cpp).
+// Pin 38: LOW = ball, HIGH = no ball (INPUT, as tested on the robot).
 //
 // 1. Press START: kicking is still OFF. Watch "pin38": no ball -> 1, ball -> 0.
 // 2. Only when pin38 is right, press START again: kicking ON (START toggles ON / OFF).
