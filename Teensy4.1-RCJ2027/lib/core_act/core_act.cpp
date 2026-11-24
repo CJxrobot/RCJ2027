@@ -629,45 +629,6 @@ LineCtl back_to_field(bool got_line_packet) {
 }
 
 // ===== Ball =====
-MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir) {
-  MergedBall m;
-  bool cam = field_fresh(field) && field.ball.seen;
-  bool irOk = ir_ball_fresh(IR_TIMEOUT_MS);
-
-  if (cam) m.dist = field.ball.dist;
-  if (irOk) {
-    m.strength = ir.strength;
-    m.closeness = clamp01((ir.strength - IR_FAR_STR) / (IR_NEAR_STR - IR_FAR_STR));
-  }
-
-  if (cam && irOk) {
-    if (fabsf(wrap180(field.ball.angle - ir.angle)) < MERGE_MAX_ERR_DEG) {
-      m.src = SRC_FUSED;              // agree: camera angle, IR distance
-      m.angle = field.ball.angle;
-    } else {
-      m.src = SRC_IR;                 // disagree: trust IR
-      m.angle = ir.angle;
-    }
-  } else if (irOk) {
-    m.src = SRC_IR;
-    m.angle = ir.angle;
-  } else if (cam) {
-    m.src = SRC_CAM;
-    m.angle = field.ball.angle;
-  }
-  return m;
-}
-
-MergedBall ir_only_ball(const IrBallData& ir) {
-  MergedBall m;
-  if (!ir_ball_fresh(IR_TIMEOUT_MS)) return m;
-  m.src = SRC_IR;
-  m.angle = ir.angle;
-  m.strength = ir.strength;
-  m.closeness = clamp01((ir.strength - IR_FAR_STR) / (IR_NEAR_STR - IR_FAR_STR));
-  return m;
-}
-
 // Capture-mode state: filtered ball angle rate and hysteresis
 static struct {
   bool init = false;

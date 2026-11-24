@@ -2,7 +2,7 @@
 #include <core_act.h>
 
 // T12 (Act): defense robot as a state machine
-// Ball: IR only for now (ir_only_ball). For camera + IR use merge_ball_data(fieldData, irBall).
+// Ball: final_ball_data = IR only for now; switch the commented line to use camera + IR.
 //
 //   DEFEND  stay on the penalty line (same line logic as act_defense)
 //           ball seen:    move sideways to keep the ball straight ahead
@@ -134,6 +134,39 @@ static bool leaveLineOn(const UsData& us) {
   return sideGoal && nearWall;
 }
 
+// ===== Ball data: final_ball_data is built here (this program decides, not the library) =====
+// IR only: IR angle + IR distance (strength)
+__attribute__((unused)) static MergedBall ir_ball_data(const IrBallData& ir) {
+  MergedBall m;
+  if (!ir_ball_fresh(IR_TIMEOUT_MS)) return m;          // no fresh IR ball -> SRC_NONE
+  m.src = SRC_IR;
+  m.angle = ir.angle;
+  m.strength = ir.strength;
+  m.closeness = constrain((ir.strength - IR_FAR_STR) / (IR_NEAR_STR - IR_FAR_STR), 0.0f, 1.0f);
+  return m;
+}
+
+// Camera + IR:
+//   both seen, angles within MERGE_MAX_ERR_DEG -> FUSED: camera angle + IR distance
+//   both seen, farther apart                   -> IR
+//   only IR -> IR,  only camera -> CAM (camera pixel distance),  none -> NONE
+__attribute__((unused)) static MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir) {
+  MergedBall m = ir_ball_data(ir);                      // IR part (strength, closeness)
+  bool cam = field.t_ms != 0 && millis() - field.t_ms <= CAM_TIMEOUT_MS && field.ball.seen;
+  if (!cam) return m;
+  m.dist = field.ball.dist;
+  if (m.src == SRC_IR) {
+    if (fabsf(wrap180(field.ball.angle - ir.angle)) < MERGE_MAX_ERR_DEG) {
+      m.src = SRC_FUSED;                                // agree: camera angle, IR distance
+      m.angle = field.ball.angle;
+    }                                                   // disagree: keep IR
+  } else {
+    m.src = SRC_CAM;
+    m.angle = field.ball.angle;
+  }
+  return m;
+}
+
 void setup() {
   core_act_init();
   camera_begin();
@@ -149,7 +182,7 @@ void setup() {
     kicker_update();
     if (millis() - lastDraw >= 100) {
       lastDraw = millis();
-      MergedBall b = ir_only_ball(irBall);
+      MergedBall b = ir_ball_data(irBall);
       display.clearDisplay();
       display.setTextSize(1);
       display.setCursor(0, 0);
@@ -181,7 +214,9 @@ void loop() {
 
   uint32_t now = millis();
   uint32_t state = line_flag() ? lineData.state : 0xFFFFFFFF;
-  MergedBall ball = ir_only_ball(irBall);
+  MergedBall final_ball_data = ir_ball_data(irBall);
+  //MergedBall final_ball_data = merge_ball_data(fieldData, irBall);
+  MergedBall& ball = final_ball_data;
   if (ball.src != SRC_NONE || has_ball()) lastBallSeen = now;
 
   Vec2 v;

@@ -8,7 +8,7 @@
 //   if line:  v = back_to_field()                        (highest priority)
 //   else:
 //     ball held / corner shot: shoot_control() -> push forward, aim at the front goal, kick
-//     else: ball = merge_ball_data(camera ball, IR ball); v = chase_ball(ball), heading 90
+//     else: final_ball_data (IR, or merge_ball_data for camera + IR); v = chase_ball(), heading 90
 //     every US_PERIOD_MS: us = US_Sensor()               (reserved R03)
 //     v = Vector_Field(v, field, us)                     (whole field + our penalty area)
 //   Vector_Motion(v)
@@ -28,6 +28,39 @@ static void drawWaiting() {
   display.printf("Line %d  Hold %d\n", line_flag(), has_ball());
   display.printf("Kick %s\n", kicker_state_name());
   display.display();
+}
+
+// ===== Ball data: final_ball_data is built here (this program decides, not the library) =====
+// IR only: IR angle + IR distance (strength)
+__attribute__((unused)) static MergedBall ir_ball_data(const IrBallData& ir) {
+  MergedBall m;
+  if (!ir_ball_fresh(IR_TIMEOUT_MS)) return m;          // no fresh IR ball -> SRC_NONE
+  m.src = SRC_IR;
+  m.angle = ir.angle;
+  m.strength = ir.strength;
+  m.closeness = constrain((ir.strength - IR_FAR_STR) / (IR_NEAR_STR - IR_FAR_STR), 0.0f, 1.0f);
+  return m;
+}
+
+// Camera + IR:
+//   both seen, angles within MERGE_MAX_ERR_DEG -> FUSED: camera angle + IR distance
+//   both seen, farther apart                   -> IR
+//   only IR -> IR,  only camera -> CAM (camera pixel distance),  none -> NONE
+__attribute__((unused)) static MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir) {
+  MergedBall m = ir_ball_data(ir);                      // IR part (strength, closeness)
+  bool cam = field.t_ms != 0 && millis() - field.t_ms <= CAM_TIMEOUT_MS && field.ball.seen;
+  if (!cam) return m;
+  m.dist = field.ball.dist;
+  if (m.src == SRC_IR) {
+    if (fabsf(wrap180(field.ball.angle - ir.angle)) < MERGE_MAX_ERR_DEG) {
+      m.src = SRC_FUSED;                                // agree: camera angle, IR distance
+      m.angle = field.ball.angle;
+    }                                                   // disagree: keep IR
+  } else {
+    m.src = SRC_CAM;
+    m.angle = field.ball.angle;
+  }
+  return m;
 }
 
 void setup() {
@@ -85,7 +118,9 @@ void loop() {
     } else {
       set_aim(false);
       set_target_heading(90);
-      v = chase_ball(merge_ball_data(fieldData, irBall), fieldData);
+      MergedBall final_ball_data = ir_ball_data(irBall);
+      //MergedBall final_ball_data = merge_ball_data(fieldData, irBall);
+      v = chase_ball(final_ball_data, fieldData);
     }
     v = Vector_Field(v, fieldData, us);
   }

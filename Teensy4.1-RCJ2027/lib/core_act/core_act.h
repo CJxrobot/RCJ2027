@@ -410,14 +410,7 @@ void strategy_begin();   // copies HEADING_P / HEADING_DEADBAND into robot
 //   flag LOW                  -> still active for LINE_HOLD_MS, then inactive
 LineCtl back_to_field(bool got_line_packet);
 
-// Both seen, angles within MERGE_MAX_ERR_DEG -> FUSED: camera angle + IR distance
-// Both seen, angles farther apart            -> IR (angle and distance)
-// Only IR -> IR,  only camera -> CAM,  none -> NONE
-MergedBall merge_ball_data(const FieldData& field, const IrBallData& ir);
-
-// IR only, no camera (the defense robot uses this for now; merge_ball_data() kept for later)
-//   IR sees the ball -> SRC_IR with IR angle and IR strength / closeness, else SRC_NONE
-MergedBall ir_only_ball(const IrBallData& ir);
+// Ball data (IR only / camera + IR merge) is built in each act_xxx.cpp: final_ball_data
 
 // Chase (reference code, tested):
 //   camera ball: capture mode (predicted error < CAPTURE_ENTER_DEG, leaves at > CAPTURE_EXIT_DEG)
