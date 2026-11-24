@@ -20,6 +20,7 @@ void loop() {
   update_gyro_sensor();
   uint8_t got = read_sense();
   LineCtl line = back_to_field(got & SENSE_GOT_LINE);
+  set_ramp(!line.active);            // line escape: full speed at once, no ramp
 
   float vx, vy;
   if (line.active) { vx = line.v.x; vy = line.v.y; }

@@ -40,6 +40,7 @@ void loop() {
 
   ShootCtl shot = shoot_control(f);
   LineCtl line = back_to_field(got & SENSE_GOT_LINE);
+  set_ramp(!line.active);            // line escape: full speed at once, no ramp
 
   Vec2 v = shot.v;
   set_aim(shot.aiming);

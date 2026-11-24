@@ -28,6 +28,7 @@ void loop() {
   uint8_t got = read_sense();
 
   LineCtl line = back_to_field(got & SENSE_GOT_LINE);
+  set_ramp(!line.active);            // line escape: full speed at once, no ramp
   Vec2 in;
   if (mode == 4) in = chase_ball(merge_ball_data(fieldData, irBall), fieldData);
   else {

@@ -27,10 +27,13 @@
 #define LS_COUNT 16 // line sensors, sensor ch at ch * 22.5 deg, CCW, 0 = right, 90 = front
 
 
+struct Vec2 { float x = 0, y = 0; };
+
 struct GyroData {
     float heading = 0.0f;
     float pitch = 0.0f;
     float roll = 0.0f;
+    float ax = 0.0f, ay = 0.0f, az = 0.0f;  // BNO085 RVC acceleration, m/s^2 (sensor axes)
     bool exist = false;   // true only if a valid packet arrived this update
 };
 
@@ -44,6 +47,10 @@ struct RobotState {
     bool  aiming = false;            // true: aim_P, no D, omega limited (set_aim())
     float aim_P = 1.5f;
     float aim_omega_max = 0.0f;      // 0 = no limit
+    // Speed ramp in Vector_Motion (anti wheel slip). 0 = off (old behaviour, e.g. act_defense)
+    float accel_max = 0.0f;          // %/s while speeding up
+    float decel_max = 0.0f;          // %/s while slowing down
+    bool  ramp_on = false;           // false: output the target at once (line escape)
 };
 
 // Top camera (MaixCam, Serial3); angle/dist = 0xFFFF when goal not found
@@ -84,7 +91,9 @@ void RobotIKControl(float vx, float vy, float omega);
 void Vector_Motion(float Vx, float Vy, float rot_V);
 void FC_Vector_Motion(float WVx, float WVy, float target_heading);
 void set_target_heading(float h);       // absolute target, limited to 90 +- robot.heading_limit
-void set_aim(bool aiming);              // aiming: robot.aim_P, no D (see RobotState)
+void set_aim(bool aiming);
+void set_ramp(bool on);                 // speed ramp on / off (off for the line escape)
+Vec2 motion_output();                   // speed actually sent last time (after the ramp)              // aiming: robot.aim_P, no D (see RobotState)
 float current_heading();                // gyro heading in the 90-forward convention
 float wrap180(float a);                 // wrap to (-180, 180]
 
@@ -274,6 +283,12 @@ bool kicker_resting();   // true during the KICK_REST_MS rest after a burst
 #define LINE_AVOID_SPEED   40.0f // % speed while leaving a line
 #define LINE_HOLD_MS       150   // keep moving away after the flag clears
 
+// ----- Speed ramp (anti wheel slip), copied into robot by strategy_begin() -----
+// 0 -> 100 % takes 100 / ACCEL_MAX seconds. Find the fastest value that does not slip
+// with test_sprint (it tries several values in a row).
+#define ACCEL_MAX          400.0f // %/s speeding up   (0 -> 80 % in 0.2 s)
+#define DECEL_MAX          600.0f // %/s slowing down
+
 // ----- Heading (PD, values from the tested reference code) -----
 #define HEADING_P          0.7f  // copied into robot.P_factor by strategy_begin()
 #define HEADING_D          0.03f // copied into robot.D_factor
@@ -371,7 +386,6 @@ bool kicker_resting();   // true during the KICK_REST_MS rest after a burst
 // =====================================================================
 // All angles in the robot frame: 0 = right, 90 = front, CCW. Speeds in % (-100..100).
 
-struct Vec2 { float x = 0, y = 0; };
 
 // SRC_FUSED = both seen and agree: angle from the camera, distance from IR
 enum BallSrc : uint8_t { SRC_NONE, SRC_CAM, SRC_IR, SRC_FUSED };

@@ -6,6 +6,8 @@ RobotState robot;
 // --- OLED OBJECT ---
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
+// Speed actually sent (after the ramp). MotorStop() resets it to 0.
+static volatile float rampVx = 0, rampVy = 0;
 static const uint8_t motorDirPins[MOTOR_COUNT] = MOTOR_DIR_PINS;
 static const uint8_t motorPwmPins[MOTOR_COUNT] = MOTOR_PWM_PINS;
 
@@ -87,6 +89,10 @@ void update_gyro_sensor(){
     }
     if(abs(pitch_raw) <= 18000) gyroData.pitch = pitch_raw * 0.01f;
     if(abs(roll_raw)  <= 18000) gyroData.roll  = roll_raw  * 0.01f;
+    // Acceleration (Little Endian, mg) -> m/s^2
+    gyroData.ax = (int16_t)((buffer[10] << 8) | buffer[9])  * 0.00980665f;
+    gyroData.ay = (int16_t)((buffer[12] << 8) | buffer[11]) * 0.00980665f;
+    gyroData.az = (int16_t)((buffer[14] << 8) | buffer[13]) * 0.00980665f;
     // Keep reading: drain all queued packets so the newest one wins
   }
 }
@@ -215,6 +221,8 @@ void SetMotorSpeed(uint8_t port, float speed){
 }
 
 void MotorStop(){
+  rampVx = 0;   // ramp starts again from standstill
+  rampVy = 0;
   for (uint8_t i = 0; i < MOTOR_COUNT; i++) {
     analogWrite(motorPwmPins[i], 0);
   }
@@ -285,16 +293,52 @@ static float headingCorrection(float target_heading) {
 
 void RobotIKControl(float vx, float vy, float omega) {
   // Inverse kinematics: wheel speed = projection of (vx, vy) on wheel axis + omega
-  SetMotorSpeed(1, -0.643f * vx + 0.766f * vy + omega);
-  SetMotorSpeed(2, -0.643f * vx - 0.766f * vy + omega);
-  SetMotorSpeed(3,  0.707f * vx - 0.707f * vy + omega);
-  SetMotorSpeed(4,  0.707f * vx + 0.707f * vy + omega);
+  float w[4] = {-0.643f * vx + 0.766f * vy + omega,
+                -0.643f * vx - 0.766f * vy + omega,
+                 0.707f * vx - 0.707f * vy + omega,
+                 0.707f * vx + 0.707f * vy + omega};
+  // If a wheel is over the limit, scale ALL wheels down together: keeps the direction and
+  // the turn right instead of clipping one wheel (clipping made the wheels fight and slip)
+  float peak = 0;
+  for (int i = 0; i < 4; i++) peak = max(peak, fabsf(w[i]));
+  float k = peak > MOTOR_SPEED_LIMIT ? MOTOR_SPEED_LIMIT / peak : 1.0f;
+  for (int i = 0; i < 4; i++) SetMotorSpeed(i + 1, w[i] * k);
 }
 
 // Robot-frame motion; rot_V nudges the target heading, clamped to 45..135
+static uint32_t rampUs = 0;
+
+void set_ramp(bool on) { robot.ramp_on = on; }
+Vec2 motion_output() { Vec2 v; v.x = rampVx; v.y = rampVy; return v; }
+
+// Move the output speed vector toward the target by at most accel (or decel) x dt.
+// Works on the whole vector, so sudden turns / reversals are smoothed too.
+static void rampToward(float& vx, float& vy) {
+  uint32_t now = micros();
+  float dt = constrain((now - rampUs) * 1e-6f, 0.0f, 0.02f);
+  rampUs = now;
+  if (!robot.ramp_on || robot.accel_max <= 0) { rampVx = vx; rampVy = vy; return; }
+
+  float dx = vx - rampVx, dy = vy - rampVy;
+  float dv = sqrtf(dx * dx + dy * dy);
+  bool speedingUp = (vx * vx + vy * vy) >= (rampVx * rampVx + rampVy * rampVy);
+  float rate = speedingUp ? robot.accel_max : (robot.decel_max > 0 ? robot.decel_max : robot.accel_max);
+  float step = rate * dt;
+  if (dv > step && dv > 0) {
+    rampVx += dx / dv * step;
+    rampVy += dy / dv * step;
+  } else {
+    rampVx = vx;
+    rampVy = vy;
+  }
+  vx = rampVx;
+  vy = rampVy;
+}
+
 void Vector_Motion(float Vx, float Vy, float rot_V) {
   robot.robot_heading = constrain(robot.robot_heading + rot_V,
                                   90.0f - robot.heading_limit, 90.0f + robot.heading_limit);
+  rampToward(Vx, Vy);
   RobotIKControl(Vx, Vy, headingCorrection(robot.robot_heading));
 }
 
@@ -613,6 +657,9 @@ void strategy_begin() {
   robot.aim_omega_max = AIM_OMEGA_MAX;
   robot.aiming = false;
   robot.robot_heading = 90.0f;
+  robot.accel_max = ACCEL_MAX;
+  robot.decel_max = DECEL_MAX;
+  robot.ramp_on = true;
 }
 
 // Camera data in this FieldData is newer than CAM_TIMEOUT_MS

@@ -187,6 +187,7 @@ void loop() {
   Vec2 v;
   set_aim(false);
   set_target_heading(90);
+  set_ramp(st != DEFEND);            // DEFEND line following reacts at once; LEAVE / RETURN ramp
 
   switch (st) {
     case DEFEND: {
@@ -220,7 +221,7 @@ void loop() {
 
       if (leaveLineOn(us)) {
         LineCtl line = back_to_field(got & SENSE_GOT_LINE);
-        if (line.active) { v = line.v; set_aim(false); set_target_heading(90); }
+        if (line.active) { v = line.v; set_aim(false); set_target_heading(90); set_ramp(false); }
       }
       break;
     }
