@@ -32,6 +32,8 @@ const float ROBOT_R = 11.0f;
 const float CM_PER_PCT = 3.0f;                  // body speed cm/s per % (100 % -> 300 cm/s)
 const float WHEEL_R = 9.0f;                     // wheel distance from the centre (guess)
 const float MOTOR_TAU = 0.05f;                  // motor reaches 63 % of a step in 50 ms (guess)
+const float DRIFT_R = 0.10f, DRIFT_L = 0.0f;     // real robot: moving sideways it drifts forward
+                                                // by this x the sideways speed (right / left)
 
 // Line sensors in the robot frame (angle: 0 = right, 90 = front; radius cm)
 // mux 1: ring of 32 sensors, radius 6.1175 cm, 2 sensors per channel.
@@ -362,6 +364,7 @@ void moveRobot(float dt) {
 
   float vx, vy, om;                                // robot frame, %
   wheelsToBody(bot.wheel, vx, vy, om);
+  vy += (vx > 0 ? DRIFT_R : DRIFT_L) * fabsf(vx);  // body drift
   float a = (bot.h - 90.0f) * DEG_TO_RAD;          // robot frame -> world
   bot.vx = (vx * cosf(a) - vy * sinf(a)) * CM_PER_PCT;
   bot.vy = (vx * sinf(a) + vy * cosf(a)) * CM_PER_PCT;
