@@ -34,20 +34,25 @@ const float WHEEL_R = 9.0f;                     // wheel distance from the centr
 const float MOTOR_TAU = 0.05f;                  // motor reaches 63 % of a step in 50 ms (guess)
 
 // Line sensors in the robot frame (angle: 0 = right, 90 = front; radius cm)
-// mux 1: ring of 16, diameter 15 cm. mux 2 (defense): arms at 0/90/180/270, 15 -> 22 cm diameter.
-// Mux 2 radii are a guess: in 8, mid 9.5, out 11. Outer side/back sensors are ignored by sense.
+// mux 1: ring of 32 sensors on a 15 cm circle, 2 sensors per channel.
+//        Channel ch = the pair at ch*22.5 +- 5.625 deg (sees the line if either sensor does).
+// mux 2 (defense): front F_in inside the ring, F_out outside it;
+//        0 / 180 / 270 arms: in and mid used (out sensor not used, not modelled).
 struct LineSensor { int bit; float deg, r; };
 std::vector<LineSensor> lineSensors() {
   std::vector<LineSensor> s;
-  for (int ch = 0; ch < 16; ch++) s.push_back({ch, ch * 22.5f, 7.5f});
+  for (int ch = 0; ch < 16; ch++) {
+    s.push_back({ch, ch * 22.5f - 5.625f, 7.5f});
+    s.push_back({ch, ch * 22.5f + 5.625f, 7.5f});
+  }
 #if SIM_MUX2
-  s.push_back({16 + 7,  90, 8.0f});   // F_in
-  s.push_back({16 + 11, 90, 11.0f});  // F_out
-  s.push_back({16 + 3, 270, 8.0f});   // B_in
+  s.push_back({16 + 7,  90, 5.5f});   // F_in  (inside the ring)
+  s.push_back({16 + 11, 90, 9.5f});   // F_out (outside the ring)
+  s.push_back({16 + 3, 270, 8.5f});   // B_in
   s.push_back({16 + 4, 270, 9.5f});   // B_mid
-  s.push_back({16 + 0, 180, 8.0f});   // L_in
+  s.push_back({16 + 0, 180, 8.5f});   // L_in
   s.push_back({16 + 1, 180, 9.5f});   // L_mid
-  s.push_back({16 + 13,  0, 8.0f});   // R_in
+  s.push_back({16 + 13,  0, 8.5f});   // R_in
   s.push_back({16 + 14,  0, 9.5f});   // R_mid
 #endif
   return s;
