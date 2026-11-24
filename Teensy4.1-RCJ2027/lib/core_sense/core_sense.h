@@ -52,6 +52,26 @@ bool send_line_state();       // set PIN_0/PIN_1, send line + newest ball (irBal
 void update_ir_ball();        // read the IR sensors (~1 ms) and store the result in irBallLast
 
 // =====================================================================
+// Ultrasonic (R03): 4 x RCWL-1601 (3.3 V) on headers H1-H4 of this board (netlist)
+//   H1: trig 25 echo 26   H2: trig 37 echo 27   H3: trig 40 echo 28   H4: trig 41 echo 31
+// One sensor is fired every US_PERIOD_MS (one at a time: no crosstalk), the echo is timed by
+// interrupts, so the loop never waits. Each sensor updates at 1000 / (4 x 30) ~ 8 Hz.
+// =====================================================================
+#define US_COUNT         4
+#define US_PERIOD_MS     30      // field: longest wall distance ~240 cm = ~14 ms echo
+#define US_MAX_ECHO_US   15000   // longer echo (or none) = no reading (~257 cm)
+#define US_MIN_ECHO_US   100     // shorter = noise (~2 cm)
+#define US_FILTER_ALPHA  0.35f   // moving average: new = old x 0.65 + raw x 0.35
+#define US_INVALID_LIMIT 3       // this many misses in a row -> distance 0 (no reading)
+extern const uint8_t US_TRIG_PINS[US_COUNT];
+extern const uint8_t US_ECHO_PINS[US_COUNT];
+extern float usDistCm[US_COUNT];     // H1-H4 filtered distance, cm, 0 = no reading
+extern float usRawCm[US_COUNT];      // H1-H4 last raw reading, cm, 0 = missed
+extern uint32_t usReadings[US_COUNT], usMisses[US_COUNT];   // counters (test / debug)
+void us_begin();
+bool us_update();                    // non-blocking, call every loop; true when a reading finished
+
+// =====================================================================
 // Packet formats (keep the same as core_act.h and the Packets tab)
 // =====================================================================
 // Packet formats shared by Teensy Act, Teensy Sense and the Maix Cam
