@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
-// Kicker test (act core), library not used
+// Kicker hardware test, manual (act core). Library NOT used: checks the kicker circuit alone.
+// Motors are never touched here. Same pins and timing as the kicker in core_act.
 // 12 V -> XL6019 boost -> IRF5305 P-MOS (pin 33) -> 20000 uF cap -> solenoid, discharge (pin 32)
 // Charge: PWM on the P-MOS, duty ramps 0 -> CHARGE_DUTY over RAMP_MS (soft charge, no big inrush),
 //         then held until CHARGE_MS, then P-MOS off -> READY
@@ -10,8 +11,8 @@
 // Serial commands: c = charge, k = kick, x = stop everything
 // Button (pin 27): ready -> kick, otherwise -> start charging
 //
-// NOTE: pin 33 shares FlexPWM2.0 with pin 4 (motor 3 PWM),
-//       analogWriteFrequency(33) also changes motor 3's PWM frequency
+// NOTE: this test uses hardware PWM on pin 33 (shares FlexPWM2.0 with motor 3, pin 4).
+//       Fine here because the motors are off. The game code (core_act) uses software PWM instead.
 
 #define CHARGE_PIN    33
 #define DISCHARGE_PIN 32
@@ -21,9 +22,9 @@
 #define CHARGE_FREQ   1000  // Hz, low enough for the IRF5305 gate to switch fully
 #define CHARGE_DUTY   255   // duty after the ramp, 0-255 (255 = fully on)
 #define RAMP_MS       1000  // soft charge: time to ramp duty from 0 to CHARGE_DUTY
-#define CHARGE_MS     10000  // total charge time, then P-MOS off
+#define CHARGE_MS     5000  // total charge time, then P-MOS off (CHARGE_TIMEOUT_MS in core_act)
 #define DEAD_MS       2     // charge off -> wait -> discharge on
-#define KICK_MS       10    // discharge pulse length
+#define KICK_MS       15    // discharge pulse length (same as core_act)
 
 enum State { IDLE, CHARGING, READY };
 State state = IDLE;
@@ -85,7 +86,7 @@ void loop() {
   if (Serial.available()) {
     char c = Serial.read();
     if (c == 'c') startCharge();
-    else if (c == 'k') kick();
+    else if (c == 'k') kick();      // kicks even if not fully charged (manual test)
     else if (c == 'x') stopAll();
   }
 
