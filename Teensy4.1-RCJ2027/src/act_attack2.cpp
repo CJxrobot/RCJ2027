@@ -1,14 +1,17 @@
 #include <Arduino.h>
 #include <core_act.h>
 
-// T11b (Act): attack robot -- act_attack + IR orbit + ultrasonic (act_attack.cpp is not changed)
+// T11b (Act): attack robot -- act_attack + IR orbit + line slow-down + aim-before-kick
+// (act_attack.cpp is not changed)
 // Hardware: mux 1 ring only (Sense USE_MUX2 0), IR, camera, 4 ultrasonic, kicker.
 //
 //   update_gyro / read camera / read sense / kicker_update
 //   picked up -> motors off
 //   line on   -> back_to_field()                          (highest priority, as act_attack)
 //   else:
-//     ball held / corner shot: shoot_control()            (as act_attack)
+//     corner shot: library shoot_control() (back up, aim, kick)
+//     ball held:   attackShot(): turn to the front goal FIRST, kick only when it is within
+//                  AIM_KICK_DEG of the front (goal not seen: push and kick after KICK_HOLD_MS)
 //     else chase the IR ball (attackChase, basic):
 //       no ball             -> library chase_ball() (back home toward our goal)
 //       ball 90 +- PUSH_DEG -> straight forward at PUSH_SPEED_ATK
@@ -16,14 +19,23 @@
 //       ball near, not in front -> around it: ball angle + offset (ORBIT_K x how far off the
 //                                  front, at most ORBIT_MAX_DEG), ORBIT_SPEED_ATK
 //       (IR distance is not settled yet: only one strength threshold is used)
-//     Vector_Field(v, camera, ultrasonic)                  (walls, goals, our penalty area)
-//     ultrasonic failed -> speed toward that side x US_FAIL_K
+//     line slow-down, every speed toward a white line falls exponentially to 0 before it:
+//       A. end lines beside the goals (camera goal ANGLE): the closer a goal is to 0 / 180
+//          (field frame), the closer the robot is to that end. The angle AT the line depends on
+//          x (13 deg at x 70, 23 deg at x 40), so it is turned into cm with x (from B):
+//          centre to the end line = |x| tan(angle) - GOAL_POINT_IN_CM -> exponential, 0 at
+//          END_STOP_CM. In front of a goal (|x| < GOAL_HALF_CM) not used (shots go there).
+//       B. side lines (camera goal ANGLES): x from both goal angles (one goal: angle + distance)
+//          -> speed toward that side line, exponential, 0 at SIDE_STOP_CM (robot centre to line)
+//       C. ultrasonic, last line: distance to the LINE (wall - US_WALL_TO_LINE_CM), minus
+//          last loop's speed x US_LAG_S (the reading is ~0.3 s old), exponential, 0 at US_LINE_STOP_CM
+//          failed sensor -> speed toward that side x US_FAIL_K
+//     Vector_Field(v, camera)                              (goals, our penalty area; walls = C)
 //   Vector_Motion(v)
 //
-// Ultrasonic (camera first, the library Vector_Field does the walls):
-//   each sensor has a switch (US_USE_*); failed = switched off / reading 0 / no packet US_STALE_MS
-//   the sensor the ball is in front of (ball angle within US_BALL_SKIP_DEG, or ball held for the
-//   front one) is not used: it may be reading the ball, the robot must still reach / push it
+// Ultrasonic: each sensor has a switch (US_USE_*); failed = switched off / reading 0 / no packet
+//   US_STALE_MS. The FRONT one is skipped while the ball is in front of it (or held): it may be
+//   reading the ball, the robot must still reach / push it.
 //
 // Serial every 200 ms: mode | ball | goals | line hex | us | v
 // OLED is drawn only before START (a redraw takes ~25 ms).
@@ -46,13 +58,32 @@
 #define US_USE_LEFT      1     // H4, 180
 #define US_STALE_MS      200   // no AB packet for this long = every sensor failed
 #define US_FAIL_K        0.7f  // failed sensor: speed toward its side x this
-#define US_BALL_SKIP_DEG 30.0f // ball within this of a sensor: skip that sensor
+#define US_BALL_SKIP_DEG 30.0f // ball within this of the front sensor (or held): skip it
+#define US_WALL_TO_LINE_CM 13.0f // wall to the white line centre (91 - 78)
+#define US_LINE_STOP_CM  3.0f  // sensor (robot edge) this far before the line: no speed toward it
+#define US_LINE_LAMBDA_CM 8.0f
+#define US_LAG_S         0.30f // ultrasonic reading age (Sense: 1 sensor / 30 ms + filter)
+#define CM_S_PER_PCT     3.0f  // 100 % = 300 cm/s
+
+// ----- Line slow-down (camera first) -----
+#define END_STOP_CM      14.0f // A. robot centre to the end line: no speed toward it (edge 3 cm inside)
+#define END_LAMBDA_CM    20.0f
+#define GOAL_POINT_IN_CM 6.0f  //    camera goal point is this far behind the goal line
+#define GOAL_HALF_CM     30.0f //    goal 60 cm wide
+#define SIDE_STOP_CM     14.0f // B. robot centre to the side line: no speed toward it (edge 3 cm inside)
+#define SIDE_LAMBDA_CM   20.0f
+#define FIELD_HALF_W_CM  78.0f // centre to the side line
+#define FIELD_HALF_LEN_CM 114.5f // centre to the camera goal point (5 cm inside the goal)
+
+// ----- Shot: turn first, then kick -----
+#define AIM_KICK_DEG     8.0f  // kick only when the front goal is within 90 +- this
+#define AIM_PUSH_ATK     40.0f // forward while turning with the ball (slower than the library 80)
 
 static const bool usUse[4] = {US_USE_FRONT, US_USE_RIGHT, US_USE_BACK, US_USE_LEFT};
 static const float usDir[4] = {90.0f, 0.0f, 270.0f, 180.0f};    // front, right, back, left
 
-enum AtkMode : uint8_t { M_LINE, M_SHOT, M_NONE, M_PUSH, M_CHASE, M_ORBIT };
-static const char* modeName[] = {"LINE", "SHOT", "NOBALL", "PUSH", "CHASE", "ORBIT"};
+enum AtkMode : uint8_t { M_LINE, M_SHOT, M_AIM, M_NONE, M_PUSH, M_CHASE, M_ORBIT };
+static const char* modeName[] = {"LINE", "CORNER", "AIM", "NOBALL", "PUSH", "CHASE", "ORBIT"};
 static AtkMode mode = M_NONE;
 
 static Vec2 polarV(float speed, float deg) {
@@ -68,34 +99,106 @@ static float usCm(int i) {
   return senseUs.cm[i];
 }
 
-static bool ballNear(const MergedBall& ball, int i) {
+static bool ballNear(const MergedBall& ball, int i) {   // ball in front of sensor i (or held: front)
   if (i == US_N_FRONT && has_ball()) return true;
   return ball.src != SRC_NONE && fabsf(wrap180(ball.angle - usDir[i])) < US_BALL_SKIP_DEG;
 }
 
-// Ultrasonic for the library Vector_Field: 0 = do not use (failed, or the ball is there)
-static UsData usForField(const MergedBall& ball) {
-  float d[4];
-  for (int i = 0; i < 4; i++) d[i] = ballNear(ball, i) ? 0 : usCm(i);
-  UsData us;
-  us.front = d[US_N_FRONT];
-  us.right = d[US_N_RIGHT];
-  us.back  = d[US_N_BACK];
-  us.left  = d[US_N_LEFT];
-  return us;
+static bool goalOk(const FieldObj& g) { return camera_fresh(CAM_TIMEOUT_MS) && g.seen; }
+
+// Cut the part of v going toward direction dir (robot frame, deg): x k (k = 1: all of it)
+static void cutToward(Vec2& v, float dir, float k) {
+  float ux = cosf(dir * DEG_TO_RAD), uy = sinf(dir * DEG_TO_RAD);
+  float into = v.x * ux + v.y * uy;
+  if (into <= 0) return;                                        // away / along: keep
+  k = constrain(k, 0.0f, 1.0f);
+  v.x -= k * into * ux;
+  v.y -= k * into * uy;
 }
 
-// Failed sensor (not the ball one): the part of v toward its side x US_FAIL_K
-static void usFailSlow(Vec2& v, const MergedBall& ball) {
+// B. Robot x (cm, + = right) from the goal angles: both goals -> triangulation (angles only),
+//    one goal -> its angle + distance. false = no goal.
+static bool fieldX(float& x) {
+  float turn = current_heading() - 90.0f;
+  const FieldObj& f = fieldData.front_goal;
+  const FieldObj& b = fieldData.back_goal;
+  bool fo = goalOk(f) && f.dist != PKT_NONE, bo = goalOk(b) && b.dist != PKT_NONE;
+  if (goalOk(f) && goalOk(b)) {
+    float fa = (f.angle + turn) * DEG_TO_RAD, ba = (b.angle + turn) * DEG_TO_RAD;
+    float det = sinf(fa - ba);                                  // 0 when the goals are 180 apart
+    if (fabsf(det) < 0.05f) { x = 0; return true; }             // on the centre line
+    x = -2.0f * FIELD_HALF_LEN_CM * cosf(ba) * cosf(fa) / det;
+    return true;
+  }
+  if (fo) { x = -f.dist * cosf((f.angle + turn) * DEG_TO_RAD); return true; }
+  if (bo) { x = -b.dist * cosf((b.angle + turn) * DEG_TO_RAD); return true; }
+  return false;
+}
+
+// A. End lines from the goal angle (+ x from B), only beside the goals
+static void slowToEnds(Vec2& v) {
+  float x;
+  if (!fieldX(x) || fabsf(x) < GOAL_HALF_CM) return;
+  float turn = current_heading() - 90.0f;                       // robot frame -> field frame
+  const FieldObj* g[2] = {&fieldData.front_goal, &fieldData.back_goal};
+  for (int i = 0; i < 2; i++) {
+    if (!goalOk(*g[i])) continue;
+    float a = g[i]->angle + turn;
+    float off = min(fabsf(wrap180(a)), fabsf(wrap180(a - 180.0f)));   // 0 = level with it
+    float d = fabsf(x) * tanf(min(off, 80.0f) * DEG_TO_RAD) - GOAL_POINT_IN_CM;   // centre to end line
+    cutToward(v, (i == 0 ? 90.0f : 270.0f) - turn, expf(-(d - END_STOP_CM) / END_LAMBDA_CM));
+  }
+}
+
+static void slowToSides(Vec2& v) {
+  float x;
+  if (!fieldX(x)) return;
+  float turn = current_heading() - 90.0f;
+  for (int s = -1; s <= 1; s += 2) {                            // -1 left line, +1 right line
+    float d = FIELD_HALF_W_CM - s * x;                          // centre to that side line
+    cutToward(v, (s > 0 ? 0.0f : 180.0f) - turn, expf(-(d - SIDE_STOP_CM) / SIDE_LAMBDA_CM));
+  }
+}
+
+// C. Ultrasonic, last line: distance to the white line, lag-compensated, exponential.
+//    Failed sensor: x US_FAIL_K. Front sensor skipped while the ball is in front of it / held.
+//    The lag uses the speed actually sent last loop (standing still: no correction).
+static void usLastLine(Vec2& v, const MergedBall& ball, const Vec2& last) {
   for (int i = 0; i < 4; i++) {
-    if (usCm(i) > 0 || ballNear(ball, i)) continue;
     float ux = cosf(usDir[i] * DEG_TO_RAD), uy = sinf(usDir[i] * DEG_TO_RAD);
     float into = v.x * ux + v.y * uy;
     if (into <= 0) continue;
-    float cut = into * (1.0f - US_FAIL_K);
-    v.x -= cut * ux;
-    v.y -= cut * uy;
+    if (i == US_N_FRONT && ballNear(ball, i)) continue;
+    float d = usCm(i);
+    if (d <= 0) { cutToward(v, usDir[i], 1.0f - US_FAIL_K); continue; }
+    float moving = max(0.0f, last.x * ux + last.y * uy);      // % toward it last loop
+    float line = d - US_WALL_TO_LINE_CM - moving * CM_S_PER_PCT * US_LAG_S;   // where it is now
+    cutToward(v, usDir[i], expf(-(line - US_LINE_STOP_CM) / US_LINE_LAMBDA_CM));
   }
+}
+
+// Ball held, not a corner: turn to the front goal first, kick when it is in front
+static Vec2 attackShot() {
+  static bool kicked = false, hadBall = false;
+  static uint32_t holdStart = 0;
+  bool ball = has_ball();
+  if (ball && !hadBall) { holdStart = millis(); kicked = false; }
+  hadBall = ball;
+  Vec2 v;
+  const FieldObj& g = fieldData.front_goal;
+  if (goalOk(g)) {
+    float err = wrap180(g.angle - 90.0f);
+    set_aim(true);
+    set_target_heading(current_heading() + err);
+    v.y = AIM_PUSH_ATK;
+    if (!kicked && fabsf(err) <= AIM_KICK_DEG && millis() - holdStart >= KICK_HOLD_MS) kicked = kicker_fire();
+  } else {                                                      // no goal: as the library
+    set_aim(false);
+    set_target_heading(90);
+    v.y = NOGOAL_PUSH_SPEED;
+    if (!kicked && millis() - holdStart >= KICK_HOLD_MS) kicked = kicker_fire();
+  }
+  return v;
 }
 
 // IR only: IR angle + IR strength
@@ -186,6 +289,7 @@ void loop() {
     return;
   }
 
+  static Vec2 lastV;                 // speed sent last loop (ultrasonic lag)
   Vec2 v;
   MergedBall ball = ir_ball_data(irBall);
   LineCtl line = back_to_field(got & SENSE_GOT_LINE);
@@ -196,21 +300,34 @@ void loop() {
     set_aim(false);
     set_target_heading(90);
   } else {
-    ShootCtl shot = shoot_control(fieldData);
+    // Corner shot: the library sequence (it keeps its own state while it runs)
+    static bool cornerShot = false;
+    if (has_ball() && in_corner(fieldData)) cornerShot = true;
+    ShootCtl shot;
+    if (cornerShot) {
+      shot = shoot_control(fieldData);
+      if (!shot.active) cornerShot = false;
+    }
     if (shot.active) {
       mode = M_SHOT;
       v = shot.v;
       set_aim(shot.aiming);
       set_target_heading(shot.heading);
+    } else if (has_ball()) {
+      mode = M_AIM;
+      v = attackShot();
     } else {
       set_aim(false);
       set_target_heading(90);
       v = attackChase(ball);
     }
-    v = Vector_Field(v, fieldData, usForField(ball));
-    usFailSlow(v, ball);
+    v = Vector_Field(v, fieldData, UsData());            // goals + our penalty area (camera)
+    slowToEnds(v);                                       // A
+    slowToSides(v);                                      // B
+    usLastLine(v, ball, lastV);                          // C
   }
   Vector_Motion(v.x, v.y, 0);
+  lastV = v;
 
   EVERY_MS(tp, 200) {
     Serial.printf("%-6s | ball %-4s %5.1f s%2.0f | goal F %s %5.1f %4u B %s %5.1f %4u | line %08lX | "
