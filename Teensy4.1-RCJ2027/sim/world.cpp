@@ -120,6 +120,8 @@ std::vector<Scenario> scenarios = {
    0, -92, 90, 4, {{0, 65, -70, true}, {2.0f, 65, -70, true}, {2.6f, -27, -113, true}}},
   {"shot_center", "Ball in the middle (0, -20), at 2 s shot at a corner (25): blocked?",
    0, -92, 90, 4, {{0, 0, -20, true}, {2.0f, 0, -20, true}, {2.6f, 25, -113, true}}},
+  {"tilted_corner", "Robot turned 30 deg at the left side of the area: back, front and left sensors on lines",
+   -33, -100, 120, 4, {{0, -20, -40, true}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };

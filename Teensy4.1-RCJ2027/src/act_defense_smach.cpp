@@ -69,7 +69,11 @@
 #define DODGE_OFFSET_DEG 60.0f // ... by turning the path this much away from the ball
 #define DEFEND_MAX_CM    45.0f // DEFEND: our goal farther than this = pushed out of the area -> RETURN
                                // (defending spots 16-33 cm, far corner of the area ~46 cm)
-#define RETURN_TURN_DEG  20.0f // RETURN: heading more than this off 90 (e.g. put back facing our goal): turn first
+// Penalty area from the field spec (cm, from the goal centre on the goal line, line centres)
+#define PA_FRONT_CM      25.0f // front line
+#define PA_HALF_CM       39.0f // side lines
+#define PA_R_CM          15.0f // rounded front corners
+#define RETURN_TURN_DEG  20.0f // DEFEND / RETURN: heading more than this off 90: stop and turn first
 
 // Sensors as lineState bits (mux 2 channel + 16), same as act_defense
 #define M2(ch) (1UL << (16 + (ch)))
@@ -77,6 +81,7 @@
 #define FRONT_OUT M2(11)
 #define BACK  (M2(4) | M2(3))
 #define RING_FRONT (1UL << 4)     // mux 1 ring channel 4 (90 deg, r 6.1 cm)
+#define FRONT_ANY (FRONT_IN | FRONT_OUT | RING_FRONT)
 
 struct Side { uint32_t mid, in; bool backing; };
 Side rightSide = {M2(14), M2(13), false};
@@ -163,6 +168,20 @@ static void go(DefState s, const char* reason) {
 static void leaveEnd(const char* reason) {
   if (leaveOut) go(RETURN, reason);
   else          go(DEFEND, "still in the area");
+}
+
+// Facing 90 (within RETURN_TURN_DEG)? DEFEND / RETURN line logic assumes it
+static bool headingOk() { return fabsf(wrap180(current_heading() - 90.0f)) <= RETURN_TURN_DEG; }
+
+// Where is the robot centre from the penalty line? Camera goal angle + distance -> robot position
+// in front of our goal (heading 90). Returns cm outside the line (< 0 = inside the area).
+// Tells a back sensor on the FRONT line (robot outside) from one on the goal / side line (deep).
+static float areaDist(const OurGoal& g) {
+  float x = -g.dist * cosf(g.angle * DEG_TO_RAD);     // + = right of the goal centre
+  float y = -g.dist * sinf(g.angle * DEG_TO_RAD);     // + = in front of the goal line
+  float qx = fabsf(x), cx = PA_HALF_CM - PA_R_CM, cy = PA_FRONT_CM - PA_R_CM;
+  if (qx > cx && y > cy) return hypotf(qx - cx, y - cy) - PA_R_CM;   // rounded corner
+  return max(qx - PA_HALF_CM, y - PA_FRONT_CM);
 }
 
 static Vec2 polarV(float speed, float deg) {
@@ -368,8 +387,14 @@ void loop() {
       if (frontTiming && now - frontStart >= LEAVE_HOLD_MS) {
         go(LEAVE, front ? "ball in front 3 s" : "ball beside, still 3 s"); break;
       }
-      // Back sensor on a line: robot is outside, the line is behind it -> camera brings it back
-      if (seen(state, BACK)) { go(RETURN, "back sensor on the line"); break; }
+      // Line sensors only mean something when the robot faces 90: turned -> turn back first
+      if (!headingOk()) break;
+      // Line ONLY behind (back sensor, no front sensor): robot is outside -> camera brings it back.
+      // Back AND front on lines (corner, curve): stay in DEFEND, the front sensors decide.
+      if (seen(state, BACK) && !seen(state, FRONT_ANY)) {
+        if (areaDist(goal) > 0) { go(RETURN, "back sensor on the line"); break; }
+        linePos = LP_UNKNOWN;          // camera: robot inside = goal / side line behind it -> forward
+      }
       v = defendMotion(state, ball);
       break;
     }
@@ -413,11 +438,15 @@ void loop() {
 
     case RETURN: {
       // Done when a FRONT sensor sees the line (robot coming in from outside: F_in first)
-      if (seen(state, FRONT_IN | FRONT_OUT) && goal.dist <= DEFEND_MAX_CM) {
+      // Exact opposite of the DEFEND -> RETURN check, so the two can never flip back and forth
+      if (seen(state, FRONT_ANY) && !seen(state, BACK) && goal.dist <= DEFEND_MAX_CM) {
         go(DEFEND, "at the line"); break;
       }
       // Put back facing our goal (rule 2.8): turn first, do not drive toward the wall
-      if (fabsf(wrap180(current_heading() - 90.0f)) > RETURN_TURN_DEG) break;
+      if (!headingOk()) break;
+      // Camera: robot centre already inside the area (front sensors missed the line) -> DEFEND,
+      // which moves forward. Opposite of the DEFEND check (areaDist > 0): no flipping.
+      if (areaDist(goal) < -3.0f && goal.dist <= DEFEND_MAX_CM) { go(DEFEND, "camera: inside the area"); break; }
 
       float dir = goal.angle;
       bool besideGoal = fabsf(wrap180(goal.angle)) < RETURN_SIDE_DEG ||
