@@ -19,7 +19,7 @@ echo %PROG% | findstr /i "defense" >nul && set MUX2=1
 where g++ >nul 2>nul
 if errorlevel 1 (
   echo g++ not found. Install it once, then open a NEW terminal:
-  echo     winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT
+  echo     winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT --source winget
   exit /b 1
 )
 

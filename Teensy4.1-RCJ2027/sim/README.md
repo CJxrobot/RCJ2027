@@ -9,7 +9,7 @@ Runs the robot program on a PC **without changing it**:
 ```
 Output: `out/<program>_<scenario>.html`. Open it in a browser (Play / slider; `...html#t=3.5` opens paused at 3.5 s).
 Windows (PowerShell): `.\run.bat` or `.\run.bat act_defense_smach ball_front`.
-Needs g++ once: `winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT`, then open a new terminal.
+Needs g++ once: `winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT --source winget`, then open a new terminal.
 
 | File | What it does |
 |---|---|
