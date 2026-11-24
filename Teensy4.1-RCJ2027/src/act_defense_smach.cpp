@@ -15,14 +15,16 @@
 //           (and, once US_Sensor() is filled, a side ultrasonic < LINE_SIDE_US_CM)
 //           ball lost / ball behind / too far from our goal / LEAVE_MAX_MS over  -> RETURN
 //   RETURN  drive toward our goal, go around the ball if it is in the way,
-//           line handling on; a FRONT sensor sees the line (robot behind it)    -> DEFEND
+//           a FRONT sensor sees the line (robot behind it), or
+//           camera: our goal closer than RETURN_DONE_CM (inside the area)        -> DEFEND
+//           no goal on the camera: stop and wait (no timeout, no blind driving)
 //
 // Before START the OLED shows live data. Lift the robot: motors stop.
 
 // ----- DEFEND: line following (same as act_defense) -----
 #define SPEED       30  // forward / backward on the penalty line
 #define BACK_SPEED  15  // backing off from a side line
-#define LOST_MS     300 // stop backing if that side sees no line this long
+#define DEF_SIDE_GOAL_DEG 65.0f // camera guard: back goal more than this off 270 -> no further away sideways
 
 // ----- DEFEND: sideways -----
 #define DEF_SIDE_KP      1.0f  // sideways speed per deg the ball is off 90
@@ -50,7 +52,9 @@
 #define RETURN_SPEED     50.0f
 #define DODGE_DEG        30.0f // ball within this of the goal direction: go around it
 #define DODGE_OFFSET_DEG 60.0f // ... by turning the path this much away from the ball
-#define RETURN_MAX_MS    4000  // safety: give up returning after this, back to DEFEND
+#define RETURN_DONE_CM   20.0f // camera: back goal closer than this = inside the penalty area, done
+                               // (front penalty line is 24 cm from the goal line)
+                               // no goal on the camera: RETURN stops and waits (no blind driving)
 
 // Sensors as lineState bits (mux 2 channel + 16), same as act_defense
 #define M2(ch) (1UL << (16 + (ch)))
@@ -58,9 +62,9 @@
 #define FRONT_OUT M2(11)
 #define BACK  (M2(4) | M2(3))
 
-struct Side { uint32_t mid, in; bool backing; uint32_t lastSeen; };
-Side rightSide = {M2(14), M2(13), false, 0};
-Side leftSide  = {M2(1),  M2(0),  false, 0};
+struct Side { uint32_t mid, in; bool backing; };
+Side rightSide = {M2(14), M2(13), false};
+Side leftSide  = {M2(1),  M2(0),  false};
 
 static bool seen(uint32_t state, uint32_t mask) { return (~state & mask) != 0; }
 
@@ -88,14 +92,12 @@ static bool defPrevIn = false, defPrevOut = false;
 
 static bool behindLine() { return linePos == LP_NEAR || linePos == LP_FAR || linePos == LP_BETWEEN; }
 
+// Side line: in sees it -> back off, only mid -> stop there, none -> free (no memory, no timer)
 static float sideLimit(Side& s, uint32_t state) {
   bool mid = seen(state, s.mid), in = seen(state, s.in);
-  if (mid || in) s.lastSeen = millis();
-  if (in) s.backing = true;
-  if (mid && !in) s.backing = false;
-  if (millis() - s.lastSeen > LOST_MS) s.backing = false;
-  if (s.backing) return -BACK_SPEED;
-  if (mid)       return 0;
+  s.backing = in;
+  if (in)  return -BACK_SPEED;
+  if (mid) return 0;
   return 1000;
 }
 
@@ -171,6 +173,14 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball) {
 
   float rightLim = sideLimit(rightSide, state), leftLim = sideLimit(leftSide, state);
   v.x = max(min(v.x, rightLim), -leftLim);           // side lines always win
+
+  // Camera guard: goal far off to one side = robot near the end of the penalty line,
+  // do not move further away from the goal (replaces the old 300 ms memory)
+  if (backGoalOk()) {
+    float g = wrap180(fieldData.back_goal.angle - 270.0f);   // robot right of the goal -> g < 0
+    if (g < -DEF_SIDE_GOAL_DEG) v.x = min(v.x, 0.0f);
+    if (g >  DEF_SIDE_GOAL_DEG) v.x = max(v.x, 0.0f);
+  }
   return v;
 }
 
@@ -321,9 +331,14 @@ void loop() {
       // Done only when a FRONT sensor sees the line (line ahead = robot behind it).
       // Still behind it (never crossed): done at once.
       if (behindLine())                { go(DEFEND, "behind the line"); break; }
-      if (now - stStart > RETURN_MAX_MS) { go(DEFEND, "return timeout"); break; }
+      if (!backGoalOk()) break;                                // no goal on the camera: stop, wait
+      if (fieldData.back_goal.dist < RETURN_DONE_CM) {          // inside the area, line is ahead
+        go(DEFEND, "camera: at our goal");
+        linePos = LP_FAR;                                      // DEFEND comes forward to the line
+        break;
+      }
 
-      float dir = backGoalOk() ? fieldData.back_goal.angle : 270.0f;
+      float dir = fieldData.back_goal.angle;
       if (ball.src != SRC_NONE) {                              // ball in the way: go around it
         float d = wrap180(ball.angle - dir);
         if (fabsf(d) < DODGE_DEG) dir += d > 0 ? -DODGE_OFFSET_DEG : DODGE_OFFSET_DEG;

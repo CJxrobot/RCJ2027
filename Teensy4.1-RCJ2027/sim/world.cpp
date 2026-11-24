@@ -83,6 +83,7 @@ struct Scenario {
   const char* desc;
   float rx, ry, rh, secs;                       // robot start and length
   std::vector<Key> ball;
+  float camOffFrom = -1, camOffTo = -1;         // our goal hidden from the camera in this time (s)
 };
 
 std::vector<Scenario> scenarios = {
@@ -96,6 +97,10 @@ std::vector<Scenario> scenarios = {
    30, -93, 90, 10, {{0, 30, -45, true}}},
   {"corner_left", "Robot at the left corner, ball still straight in front of it: should LEAVE after 3 s",
    -30, -93, 90, 10, {{0, -30, -45, true}}},
+  {"return_cam_off", "Corner LEAVE, our goal hidden from the camera 3.7-5.0 s (during RETURN): robot must stop, then go on",
+   30, -93, 90, 10, {{0, 30, -45, true}}, 3.7f, 5.0f},
+  {"side_far", "Ball far right outside the penalty area: robot must stop at the side, never cross the side line",
+   0, -93, 90, 8, {{0, 75, -70, true}}},
   {"ball_lost", "Ball in front, removed at 3.3 s (right after LEAVE): RETURN -> DEFEND",
    0, -93, 90, 8, {{0, 0, -30, true}, {3.3f, 0, -30, false}}},
 };
@@ -207,7 +212,10 @@ void sendCamera() {
   p[2] = (b ? CAM_FLAG_BALL : 0) | CAM_FLAG_FRONT | CAM_FLAG_BACK;
   putObj(p, 3, b, ball.x, ball.y, camPixels(dist(ball.x, ball.y)));
   putObj(p, 7, true, 0, LINE_Y + 1, (uint16_t)lroundf(dist(0, LINE_Y + 1)));     // front goal (theirs)
-  putObj(p, 11, true, 0, -LINE_Y - 1, (uint16_t)lroundf(dist(0, -LINE_Y - 1)));  // back goal (ours)
+  float t = sim_us / 1e6f;
+  bool ours = !(t >= sc->camOffFrom && t < sc->camOffTo);
+  if (!ours) p[2] &= ~CAM_FLAG_BACK;
+  putObj(p, 11, ours, 0, -LINE_Y - 1, (uint16_t)lroundf(dist(0, -LINE_Y - 1)));  // back goal (ours)
   p[15] = camSeq++;
   p[16] = pkt_sum(p, 1, 15);
   p[17] = CAM_END;
