@@ -255,6 +255,7 @@ bool ballHeld() {
 // A key with visible = false always applies (the ball is taken away).
 void scriptBall(float t) {
   const std::vector<Key>& k = sc->ball;
+  if (k.empty()) return;                          // live mode: the mouse moves the ball
   size_t i = 0;
   while (i + 1 < k.size() && k[i + 1].t <= t) i++;
   if (!k[i].visible) { ball.visible = false; ball.x = 999; ball.y = 999; return; }
@@ -272,8 +273,10 @@ void scriptBall(float t) {
   ball.visible = true;
 }
 
+bool mouseHoldsBall = false;                       // live mode: ball under the mouse, no physics
+
 void moveBall(float dt) {
-  if (!ball.visible) return;
+  if (!ball.visible || mouseHoldsBall) return;
   if (!ball.scripted) {
     float v = hypotf(ball.vx, ball.vy);
     float k = v > 0 ? max(0.0f, v - BALL_FRICTION * dt) / v : 0;
@@ -342,7 +345,7 @@ void sim_advance(uint32_t us) {
   }
 }
 
-// ===================== Output: one HTML file =====================
+// ===================== Output =====================
 std::string jsonText(const std::string& s) {
   std::string o = "\"";
   for (char c : s) {
@@ -352,46 +355,130 @@ std::string jsonText(const std::string& s) {
   return o + "\"";
 }
 
-void writeHtml(const char* path) {
-  FILE* in = fopen("viewer.html", "rb");
-  if (!in) { printf("viewer.html not found (run from the sim folder)\n"); return; }
-  std::string page;
+std::string readFile(const char* path) {
+  std::string text;
+  FILE* in = fopen(path, "rb");
+  if (!in) { printf("%s not found (run from the sim folder)\n", path); return text; }
   char buf[4096];
   size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), in)) > 0) page.append(buf, n);
+  while ((n = fread(buf, 1, sizeof(buf), in)) > 0) text.append(buf, n);
   fclose(in);
+  return text;
+}
 
-  std::string j = "{\"prog\":" + jsonText(SIM_PROG) + ",\"name\":" + jsonText(sc->name) +
-                  ",\"desc\":" + jsonText(sc->desc) + ",\"sensors\":[";
-  char t[256];
+// viewer.html with the data put in (data = "null": live mode)
+std::string viewerPage(const std::string& data) {
+  std::string page = readFile("viewer.html");
+  size_t at = page.find("__SIM_DATA__");
+  if (at != std::string::npos) page.replace(at, 12, data);
+  return page;
+}
+
+std::string sensorsJson() {
+  std::string j = "[";
+  char t[64];
   for (size_t i = 0; i < sensors.size(); i++) {
     snprintf(t, sizeof(t), "%s[%.1f,%.1f,%d]", i ? "," : "", sensors[i].deg, sensors[i].r, sensors[i].bit);
     j += t;
   }
-  j += "],\"frames\":[";
-  for (size_t i = 0; i < frames.size(); i++) {
-    const Frame& f = frames[i];
-    snprintf(t, sizeof(t), "%s[%.3f,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%.0f,%.0f,%.0f,%.0f,%u,%d,%d]", i ? "," : "",
-             f.t, f.rx, f.ry, f.rh, f.bx, f.by, f.bvis, f.wheel[0], f.wheel[1], f.wheel[2], f.wheel[3],
-             f.line, f.flag, f.hold);
-    j += t;
-  }
-  j += "],\"console\":[";
-  for (size_t i = 0; i < sim_console.size(); i++) {
-    snprintf(t, sizeof(t), "%s[%u,", i ? "," : "", sim_console[i].ms);
+  return j + "]";
+}
+
+std::string frameJson(const Frame& f) {
+  char t[256];
+  snprintf(t, sizeof(t), "[%.3f,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%.0f,%.0f,%.0f,%.0f,%u,%d,%d]",
+           f.t, f.rx, f.ry, f.rh, f.bx, f.by, f.bvis, f.wheel[0], f.wheel[1], f.wheel[2], f.wheel[3],
+           f.line, f.flag, f.hold);
+  return t;
+}
+
+std::string consoleJson(size_t from) {
+  std::string j = "[";
+  char t[32];
+  for (size_t i = from; i < sim_console.size(); i++) {
+    snprintf(t, sizeof(t), "%s[%u,", i > from ? "," : "", sim_console[i].ms);
     j += t + jsonText(sim_console[i].text) + "]";
   }
-  j += "]}";
+  return j + "]";
+}
 
-  size_t at = page.find("__SIM_DATA__");
-  if (at != std::string::npos) page.replace(at, 12, j);
+void writeHtml(const char* path) {
+  std::string j = "{\"prog\":" + jsonText(SIM_PROG) + ",\"name\":" + jsonText(sc->name) +
+                  ",\"desc\":" + jsonText(sc->desc) + ",\"sensors\":" + sensorsJson() + ",\"frames\":[";
+  for (size_t i = 0; i < frames.size(); i++) j += (i ? "," : "") + frameJson(frames[i]);
+  j += "],\"console\":" + consoleJson(0) + "}";
+
+  std::string page = viewerPage(j);
   FILE* out = fopen(path, "wb");
   fwrite(page.data(), 1, page.size(), out);
   fclose(out);
 }
 
+// ===================== Live mode =====================
+// The browser calls /step about 50 times a second:
+//   /step?ms=20&drag=1&x=10&y=-30   drag 1 = ball held by the mouse at (x, y), 2 = robot, 0 = none
+//   &hide=1                          take the ball off the field
+// The robot program runs for ms of simulated time, the answer is the newest frame + new console lines.
+int live_serve(int port, std::string (*handle)(const std::string& path, std::string& type));
+Scenario liveScenario = {"live", "Live: click = put the ball there, drag = move / throw it, drag the robot to move it",
+                         0, -93, 90, 0, {}};
+size_t liveLogSent = 0;
+
+float param(const std::string& path, const char* key, float fallback) {
+  for (const char* sep : {"?", "&"}) {
+    size_t at = path.find(std::string(sep) + key + "=");
+    if (at != std::string::npos) return atof(path.c_str() + at + strlen(key) + 2);
+  }
+  return fallback;
+}
+
+std::string liveHandle(const std::string& path, std::string& type) {
+  if (path == "/" || path.rfind("/index", 0) == 0) { type = "text/html"; return viewerPage("null"); }
+  if (path.rfind("/info", 0) == 0)
+    return "{\"prog\":" + jsonText(SIM_PROG) + ",\"desc\":" + jsonText(sc->desc) + ",\"sensors\":" + sensorsJson() + "}";
+  if (path.rfind("/step", 0) != 0) return "{}";
+
+  float ms = constrain(param(path, "ms", 20), 0.0f, 100.0f);
+  int drag = (int)param(path, "drag", 0);
+  float x = param(path, "x", 0), y = param(path, "y", 0);
+  if (param(path, "hide", 0)) { ball.visible = false; ball.x = ball.y = 999; ball.vx = ball.vy = 0; }
+  // Ball held by the mouse: it stays under the mouse; let go = thrown with the mouse speed
+  bool& held = mouseHoldsBall;
+  static float throwVx = 0, throwVy = 0;
+  if (drag == 1) {
+    float dt = max(ms, 5.0f) / 1000.0f;
+    if (held) {                                   // smoothed mouse speed
+      throwVx = 0.5f * throwVx + 0.5f * constrain((x - ball.x) / dt, -400.0f, 400.0f);
+      throwVy = 0.5f * throwVy + 0.5f * constrain((y - ball.y) / dt, -400.0f, 400.0f);
+    } else {
+      throwVx = throwVy = 0;
+    }
+    held = true;
+    ball.x = x;
+    ball.y = y;
+    ball.vx = ball.vy = 0;
+    ball.visible = true;
+  } else if (held) {
+    held = false;
+    ball.vx = throwVx;
+    ball.vy = throwVy;
+  }
+  if (drag == 2) { bot.x = x; bot.y = y; }
+
+  uint64_t until = sim_us + (uint64_t)(ms * 1000);
+  while (sim_us < until) {
+    loop();
+    sim_advance(LOOP_US);
+  }
+  frames.clear();
+  record();
+  std::string j = "{\"f\":" + frameJson(frames.back()) + ",\"log\":" + consoleJson(liveLogSent) + "}";
+  liveLogSent = sim_console.size();
+  return j;
+}
+
 // ===================== main =====================
-// usage: sim <scenario | all>   (run from the sim folder, output in sim/out/)
+// usage: sim <scenario | all | live>   (run from the sim folder, output in sim/out/)
 // Each scenario runs in its own process (the robot program keeps static state).
 int main(int argc, char** argv) {
   const char* want = argc > 1 ? argv[1] : "all";
@@ -403,9 +490,11 @@ int main(int argc, char** argv) {
     }
     return fails;
   }
+  bool live = !strcmp(want, "live");
+  if (live) sc = &liveScenario;
   for (const Scenario& s : scenarios) if (!strcmp(s.name, want)) sc = &s;
   if (!sc) {
-    printf("unknown scenario '%s'. Scenarios:\n", want);
+    printf("unknown scenario '%s'. Use: all, live, or one of:\n", want);
     for (const Scenario& s : scenarios) printf("  %-12s %s\n", s.name, s.desc);
     return 1;
   }
@@ -413,12 +502,15 @@ int main(int argc, char** argv) {
   srand(1);
   sensors = lineSensors();
   bot = {sc->rx, sc->ry, sc->rh, 0, 0, 0, {0, 0, 0, 0}};
-  ball = {999, 999, 0, 0, false, true};
+  ball = {999, 999, 0, 0, false, !live};
+  if (live) { ball.x = 0; ball.y = -30; ball.visible = true; }
   sim_set_pin(BALL_POSESSION, HIGH);              // no ball
   sim_set_pin(START_BUTTON, LOW);                 // START already pressed
   scriptBall(0);
 
   setup();
+  if (live) return live_serve(8765, liveHandle);
+
   while (sim_us < (uint64_t)(sc->secs * 1e6f)) {
     loop();
     sim_advance(LOOP_US);

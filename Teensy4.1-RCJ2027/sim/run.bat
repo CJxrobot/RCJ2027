@@ -3,13 +3,17 @@ rem Windows: build one act program for the PC and run the scenarios.
 rem usage: .\run.bat [program] [scenario | all]
 rem   .\run.bat                              -> act_defense_smach, all scenarios
 rem   .\run.bat act_defense_smach ball_front -> one scenario, opens it in the browser
+rem   .\run.bat live                         -> live mode in the browser (drag the ball)
+rem   .\run.bat act_attack live              -> live mode, attack program
 rem Output: sim\out\<program>_<scenario>.html
 setlocal
 cd /d "%~dp0"
 
 set PROG=%~1
+if /i "%PROG%"=="live" (set PROG=act_defense_smach& set LIVEARG=live)
 if "%PROG%"=="" set PROG=act_defense_smach
 set SCEN=%~2
+if defined LIVEARG set SCEN=live
 if "%SCEN%"=="" set SCEN=all
 
 rem defense robot: mux 2 line sensors
@@ -27,7 +31,7 @@ if not exist out mkdir out
 echo Building %PROG% ...
 g++ -std=gnu++17 -O2 -w -fpermissive -static -Istub -I../lib/core_act -I../include ^
     -DSIM_MUX2=%MUX2% -DSIM_PROG=\"%PROG%\" ^
-    ../lib/core_act/core_act.cpp ../src/%PROG%.cpp fake_hw.cpp world.cpp -o out/sim_%PROG%.exe
+    ../lib/core_act/core_act.cpp ../src/%PROG%.cpp fake_hw.cpp world.cpp live.cpp -lws2_32 -o out/sim_%PROG%.exe
 if errorlevel 1 exit /b 1
 
 out\sim_%PROG%.exe %SCEN%

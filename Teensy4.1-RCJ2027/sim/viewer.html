@@ -16,6 +16,7 @@
   button { font-size: 14px; padding: 4px 10px; }
   input[type=range] { width: 100%; }
   .state { font-size: 20px; font-weight: bold; }
+  .live-only { display: none; }
 </style>
 </head>
 <body>
@@ -26,6 +27,7 @@
     <div>
       <button id="play">Pause</button>
       <select id="speed"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option></select> x
+      <button id="hide" class="live-only">Take ball away</button>
     </div>
     <input id="time" type="range" min="0" value="0">
     <div id="info"></div>
@@ -33,16 +35,16 @@
   </div>
 </div>
 <script>
+// Replay: SIM holds the whole run.  Live (SIM = null): the page asks the simulator for each step.
 const SIM = __SIM_DATA__;
+const LIVE = SIM === null;
 // frame: [t, rx, ry, rh, bx, by, bvis, w0, w1, w2, w3, lineState, flag, hold]
-const F = SIM.frames, cv = document.getElementById('c'), g = cv.getContext('2d');
+const cv = document.getElementById('c'), g = cv.getContext('2d');
 const S = 2.5;                                    // px per cm
 const W = 182, H = 243;                           // field with out area, cm
 const px = x => (x + W / 2) * S, py = y => (H / 2 - y) * S;
-document.getElementById('title').textContent = SIM.prog + '  /  ' + SIM.name + ':  ' + SIM.desc;
-const slider = document.getElementById('time');
-slider.max = F.length - 1;
-let i = 0, playing = true, last = performance.now(), acc = 0;
+const $ = id => document.getElementById(id);
+let sensors = [], playing = true;
 
 function line(x1, y1, x2, y2) { g.beginPath(); g.moveTo(px(x1), py(y1)); g.lineTo(px(x2), py(y2)); g.stroke(); }
 
@@ -63,74 +65,125 @@ function drawField() {
   g.fillStyle = '#f9a825'; g.fillRect(px(-30), py(116.9), 60 * S, 7.4 * S);       // their goal (yellow)
 }
 
-function draw() {
-  const f = F[i];
+// f = frame, trail = recent frames (last one = f), lines = console lines up to now
+function drawFrame(f, trail, lines) {
   drawField();
-  // trail
   g.strokeStyle = 'rgba(255,255,255,0.35)'; g.lineWidth = 1; g.beginPath();
-  for (let k = Math.max(0, i - 150); k <= i; k++) g.lineTo(px(F[k][1]), py(F[k][2]));
+  for (const k of trail) g.lineTo(px(k[1]), py(k[2]));
   g.stroke();
-  // robot
+  // robot (purple = holding the ball)
   const [t, rx, ry, rh] = f, a = rh * Math.PI / 180;
   g.fillStyle = f[13] ? '#6a1b9a' : '#333'; g.beginPath(); g.arc(px(rx), py(ry), 11 * S, 0, 7); g.fill();
   g.strokeStyle = '#fff'; g.lineWidth = 2; line(rx, ry, rx + 11 * Math.cos(a), ry + 11 * Math.sin(a));
-  // line sensors (red = sees the line)
-  for (const [deg, r, bit] of SIM.sensors) {
+  // line sensors (red = sees the line, blue = mux 2)
+  for (const [deg, r, bit] of sensors) {
     const b = (rh - 90 + deg) * Math.PI / 180, seen = !((f[11] >>> bit) & 1);
     g.fillStyle = seen ? '#ff1744' : (bit >= 16 ? '#80deea' : '#bbb');
     g.beginPath(); g.arc(px(rx + r * Math.cos(b)), py(ry + r * Math.sin(b)), seen ? 3.5 : 2, 0, 7); g.fill();
   }
-  // velocity arrow (from the next frame)
-  const n = F[Math.min(i + 1, F.length - 1)], dt = Math.max(n[0] - t, 1e-3);
-  g.strokeStyle = '#ffeb3b'; g.lineWidth = 2; line(rx, ry, rx + (n[1] - rx) / dt * 0.15, ry + (n[2] - ry) / dt * 0.15);
-  // ball
+  // velocity arrow from the last two frames
+  const p = trail.length > 1 ? trail[trail.length - 2] : f, dt = Math.max(t - p[0], 1e-3);
+  const vx = (rx - p[1]) / dt, vy = (ry - p[2]) / dt;
+  g.strokeStyle = '#ffeb3b'; g.lineWidth = 2; line(rx, ry, rx + vx * 0.15, ry + vy * 0.15);
   if (f[6]) { g.fillStyle = '#ff6d00'; g.beginPath(); g.arc(px(f[4]), py(f[5]), 2.1 * S + 1, 0, 7); g.fill(); }
 
-  // text: newest state line printed by the program
-  const ms = t * 1000;
-  let state = '', lines = [];
-  for (const [cms, text] of SIM.console) {
-    if (cms > ms) break;
-    lines.push([cms, text]);
+  // newest state printed by the program
+  let state = '';
+  for (const [, text] of lines) {
     const m = text.match(/-> (\w+)/) || text.match(/^(\w+)\s+\(/);
     if (m) state = m[1];
   }
-  const speed = Math.hypot(n[1] - rx, n[2] - ry) / dt;
-  document.getElementById('info').innerHTML =
+  $('info').innerHTML =
     `<div class="state">${state}</div>` +
-    `t ${t.toFixed(2)} s &nbsp; speed ${speed.toFixed(0)} cm/s &nbsp; heading ${rh.toFixed(0)}<br>` +
+    `t ${t.toFixed(2)} s &nbsp; speed ${Math.hypot(vx, vy).toFixed(0)} cm/s &nbsp; heading ${rh.toFixed(0)}<br>` +
     `wheels % ${f.slice(7, 11).map(v => v.toFixed(0).padStart(4)).join(' ')}<br>` +
     `line flag ${f[12]} &nbsp; ball held ${f[13]} &nbsp; robot (${rx.toFixed(0)}, ${ry.toFixed(0)})`;
-  const log = document.getElementById('log');
-  log.innerHTML = lines.slice(-60).map(([c, x]) =>
+  $('log').innerHTML = lines.slice(-60).map(([c, x]) =>
     `<span class="${x.startsWith('[SIM]') ? 'sim' : (x.includes('->') ? 'state' : '')}">${(c / 1000).toFixed(2).padStart(6)}  ${x.replace(/</g, '&lt;')}</span>`).join('\n');
-  log.scrollTop = log.scrollHeight;
-  slider.value = i;
+  $('log').scrollTop = $('log').scrollHeight;
 }
 
-function tick(now) {
-  if (playing) {
-    acc += (now - last) / 1000 * parseFloat(document.getElementById('speed').value);
-    while (i < F.length - 1 && F[i + 1][0] - F[i][0] <= acc) { acc -= F[i + 1][0] - F[i][0]; i++; }
-    if (i >= F.length - 1) { playing = false; document.getElementById('play').textContent = 'Play'; }
-    draw();
+$('play').onclick = e => { playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play'; };
+const speed = () => parseFloat($('speed').value);
+
+// ===================== Replay =====================
+function startReplay() {
+  const F = SIM.frames, slider = $('time');
+  sensors = SIM.sensors;
+  $('title').textContent = SIM.prog + '  /  ' + SIM.name + ':  ' + SIM.desc;
+  slider.max = F.length - 1;
+  let i = 0, last = performance.now(), acc = 0;
+  const draw = () => {
+    const lines = SIM.console.filter(([c]) => c <= F[i][0] * 1000);
+    drawFrame(F[i], F.slice(Math.max(0, i - 150), i + 1), lines);
+    slider.value = i;
+  };
+  function tick(now) {
+    if (playing) {
+      acc += (now - last) / 1000 * speed();
+      while (i < F.length - 1 && F[i + 1][0] - F[i][0] <= acc) { acc -= F[i + 1][0] - F[i][0]; i++; }
+      if (i >= F.length - 1) { playing = false; $('play').textContent = 'Play'; }
+      draw();
+    }
+    last = now;
+    requestAnimationFrame(tick);
   }
-  last = now;
+  $('play').addEventListener('click', () => { if (i >= F.length - 1) i = 0; acc = 0; });
+  slider.oninput = () => { i = +slider.value; acc = 0; draw(); };
+  const jump = location.hash.match(/t=([\d.]+)/);   // page.html#t=3.5 opens paused at 3.5 s
+  if (jump) {
+    while (i < F.length - 1 && F[i][0] < +jump[1]) i++;
+    playing = false; $('play').textContent = 'Play';
+  }
+  draw();
   requestAnimationFrame(tick);
 }
-document.getElementById('play').onclick = e => {
-  if (i >= F.length - 1) i = 0;
-  playing = !playing; acc = 0; e.target.textContent = playing ? 'Pause' : 'Play';
-};
-slider.oninput = () => { i = +slider.value; acc = 0; draw(); };
-// page.html#t=3.5 opens paused at 3.5 s
-const jump = location.hash.match(/t=([\d.]+)/);
-if (jump) {
-  while (i < F.length - 1 && F[i][0] < +jump[1]) i++;
-  playing = false; document.getElementById('play').textContent = 'Play';
+
+// ===================== Live =====================
+// Mouse: click = put the ball there, drag = move / throw it. Drag the robot to move it.
+async function startLive() {
+  const info = await (await fetch('/info')).json();
+  sensors = info.sensors;
+  $('title').textContent = info.prog + '  /  ' + info.desc;
+  $('time').style.display = 'none';
+  for (const e of document.querySelectorAll('.live-only')) e.style.display = 'inline';
+  let drag = 0, mx = 0, my = 0, hide = 0, f = null, last = performance.now();
+  const trail = [], lines = [];
+
+  const toField = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) / S - W / 2, H / 2 - (e.clientY - r.top) / S]; };
+  cv.onmousedown = e => {
+    [mx, my] = toField(e);
+    const nearRobot = f && Math.hypot(mx - f[1], my - f[2]) < 13;
+    const nearBall = f && f[6] && Math.hypot(mx - f[4], my - f[5]) < 10;
+    drag = nearRobot && !nearBall ? 2 : 1;
+  };
+  cv.onmousemove = e => { [mx, my] = toField(e); };
+  window.onmouseup = () => { drag = 0; };
+  $('hide').onclick = () => { hide = 1; };
+
+  async function tick() {
+    const now = performance.now(), ms = Math.min(now - last, 50) * speed();
+    last = now;
+    if (playing) {
+      try {
+        const q = `/step?ms=${ms.toFixed(1)}&drag=${drag}&x=${mx.toFixed(1)}&y=${my.toFixed(1)}&hide=${hide}`;
+        hide = 0;
+        const r = await (await fetch(q)).json();
+        f = r.f;
+        trail.push(f); if (trail.length > 150) trail.shift();
+        lines.push(...r.log); if (lines.length > 500) lines.splice(0, lines.length - 500);
+        drawFrame(f, trail, lines);
+      } catch (err) {
+        $('info').textContent = 'Simulator stopped. Run it again: run.bat live';
+        return;
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+  tick();
 }
-draw();
-requestAnimationFrame(tick);
+
+if (LIVE) startLive(); else startReplay();
 </script>
 </body>
 </html>
