@@ -325,11 +325,15 @@ try:
             img.draw_circle(CENTER_X, CENTER_Y, R_MAX, image.Color.from_rgb(255, 0, 0), 1)
             img.draw_cross(CENTER_X, CENTER_Y, image.Color.from_rgb(255, 255, 255), 8, 1)
 
-            for g, col in ((front_goal, (255, 255, 0)), (back_goal, (0, 128, 255))):
+            # Outline in the goal's REAL colour (yellow / blue), whatever ATTACK_YELLOW says.
+            # Front goal (the one we attack) thick, back goal (ours) thin.
+            front_col = (255, 255, 0) if ATTACK_YELLOW else (0, 128, 255)
+            back_col = (0, 128, 255) if ATTACK_YELLOW else (255, 255, 0)
+            for g, col, w in ((front_goal, front_col, 3), (back_goal, back_col, 1)):
                 if g.best:
                     c = image.Color.from_rgb(*col)
-                    img.draw_rect(g.best["x"], g.best["y"], g.best["w"], g.best["h"], c, 2)
-                    img.draw_line(CENTER_X, CENTER_Y, g.best["cx"], g.best["cy"], c, 2)
+                    img.draw_rect(g.best["x"], g.best["y"], g.best["w"], g.best["h"], c, w)
+                    img.draw_line(CENTER_X, CENTER_Y, g.best["cx"], g.best["cy"], c, w)
 
             if best_ball:
                 rad = max(best_ball["w"], best_ball["h"]) // 2 + 2
