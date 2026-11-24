@@ -253,3 +253,77 @@ bool send_sense_packet(uint32_t state, const IrBall& ball) {
   if (line) senseTxStats.line_pkts++;
   return true;
 }
+
+// ===== Ultrasonic (R03) =====
+const uint8_t US_TRIG_PINS[US_COUNT] = {25, 37, 40, 41};   // H1-H4
+const uint8_t US_ECHO_PINS[US_COUNT] = {26, 27, 28, 31};
+float usDistCm[US_COUNT];
+float usRawCm[US_COUNT];
+uint32_t usReadings[US_COUNT], usMisses[US_COUNT];
+
+static volatile uint32_t usEchoStart[US_COUNT], usEchoLen[US_COUNT];
+static volatile bool usEchoDone[US_COUNT];
+static bool usPending[US_COUNT];       // fired, echo not finished yet
+static uint8_t usMissRun[US_COUNT];    // misses in a row
+static uint8_t usCur = US_COUNT - 1;
+static uint32_t usLastTrig = 0;
+
+static void usEdge(uint8_t i) {
+  if (digitalReadFast(US_ECHO_PINS[i])) usEchoStart[i] = micros();
+  else { usEchoLen[i] = micros() - usEchoStart[i]; usEchoDone[i] = true; }
+}
+static void usIsr0() { usEdge(0); }
+static void usIsr1() { usEdge(1); }
+static void usIsr2() { usEdge(2); }
+static void usIsr3() { usEdge(3); }
+
+static void usMiss(uint8_t i) {
+  usRawCm[i] = 0;
+  usMisses[i]++;
+  if (usMissRun[i] < US_INVALID_LIMIT) usMissRun[i]++;
+  if (usMissRun[i] >= US_INVALID_LIMIT) usDistCm[i] = 0;
+}
+
+void us_begin() {
+  void (*isr[US_COUNT])() = {usIsr0, usIsr1, usIsr2, usIsr3};
+  for (int i = 0; i < US_COUNT; i++) {
+    pinMode(US_TRIG_PINS[i], OUTPUT);
+    digitalWriteFast(US_TRIG_PINS[i], LOW);
+    pinMode(US_ECHO_PINS[i], INPUT);
+    attachInterrupt(digitalPinToInterrupt(US_ECHO_PINS[i]), isr[i], CHANGE);
+  }
+}
+
+bool us_update() {
+  bool fresh = false;
+  for (int i = 0; i < US_COUNT; i++) {          // finished echoes
+    if (!usEchoDone[i]) continue;
+    noInterrupts();
+    uint32_t len = usEchoLen[i];
+    usEchoDone[i] = false;
+    interrupts();
+    if (!usPending[i]) continue;                 // edge from a sensor we did not fire: ignore
+    usPending[i] = false;
+    fresh = true;
+    if (len > US_MIN_ECHO_US && len < US_MAX_ECHO_US) {
+      float cm = len * 0.0343f / 2.0f;
+      usRawCm[i] = cm;
+      usDistCm[i] = usDistCm[i] > 0 ? usDistCm[i] * (1.0f - US_FILTER_ALPHA) + cm * US_FILTER_ALPHA : cm;
+      usMissRun[i] = 0;
+      usReadings[i]++;
+    } else {
+      usMiss(i);
+    }
+  }
+  if (millis() - usLastTrig >= US_PERIOD_MS) {   // next sensor
+    if (usPending[usCur]) { usPending[usCur] = false; usMiss(usCur); fresh = true; }   // no echo at all
+    usCur = (usCur + 1) % US_COUNT;
+    usLastTrig = millis();
+    usEchoDone[usCur] = false;
+    usPending[usCur] = true;
+    digitalWriteFast(US_TRIG_PINS[usCur], HIGH); // 10 us trigger pulse
+    delayMicroseconds(10);
+    digitalWriteFast(US_TRIG_PINS[usCur], LOW);
+  }
+  return fresh;
+}
