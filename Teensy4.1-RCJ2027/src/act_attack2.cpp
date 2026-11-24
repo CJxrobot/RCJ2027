@@ -7,7 +7,9 @@
 //
 //   update_gyro / read camera / read sense / kicker_update
 //   picked up -> motors off
-//   line on   -> back_to_field()                          (highest priority, as act_attack)
+//   line on   -> back_to_field() escape (away from the line) + the chase move WITHOUT its part
+//                toward the line: only the speed perpendicular to the line and toward it is
+//                blocked, moving along the line goes on. Line direction unknown yet: stop.
 //   else:
 //     ball held / corner shot: library shoot_control(), same as the defense LEAVE:
 //       push forward while turning to the front goal, kick after KICK_HOLD_MS (the kick
@@ -30,6 +32,9 @@
 //       C. ultrasonic, last line: distance to the LINE (wall - US_WALL_TO_LINE_CM), minus
 //          last loop's speed x US_LAG_S (the reading is ~0.3 s old), exponential, 0 at US_LINE_STOP_CM
 //          failed sensor -> speed toward that side x US_FAIL_K
+//     around our penalty area (camera, back goal): the part of the move toward the area is
+//       turned sideways (tangent, toward the ball's side) instead of cut, more the closer:
+//       exponential, all of it at AREA_STOP_CM (robot centre outside the penalty line)
 //     Vector_Field(v, camera)                              (goals, our penalty area; walls = C)
 //   Vector_Motion(v)
 //
@@ -74,6 +79,17 @@
 #define SIDE_LAMBDA_CM   20.0f
 #define FIELD_HALF_W_CM  78.0f // centre to the side line
 #define FIELD_HALF_LEN_CM 114.5f // centre to the camera goal point (5 cm inside the goal)
+
+// ----- Around our penalty area (back goal camera, same geometry as the defense) -----
+#define AREA_STOP_CM     8.0f  // robot centre this far outside the penalty line: nothing toward it
+#define AREA_LAMBDA_CM   15.0f // turned sideways: exp(-(dist - stop) / lambda)
+#define PA_FRONT_CM      30.0f // camera goal point to the front line
+#define PA_HALF_CM       39.0f // side lines
+#define PA_R_CM          15.0f // rounded front corners
+#define GOAL_K_DEG1      44.0f // camera distance slant correction (defense D1)
+#define GOAL_K1          0.81f
+#define GOAL_K_DEG2      66.0f
+#define GOAL_K2          0.61f
 
 static const bool usUse[4] = {US_USE_FRONT, US_USE_RIGHT, US_USE_BACK, US_USE_LEFT};
 static const float usDir[4] = {90.0f, 0.0f, 270.0f, 180.0f};    // front, right, back, left
@@ -144,6 +160,39 @@ static void slowToEnds(Vec2& v) {
     float d = fabsf(x) * tanf(min(off, 80.0f) * DEG_TO_RAD) - GOAL_POINT_IN_CM;   // centre to end line
     cutToward(v, (i == 0 ? 90.0f : 270.0f) - turn, expf(-(d - END_STOP_CM) / END_LAMBDA_CM));
   }
+}
+
+// Camera goal distance slant correction (same as the defense, measured on the field)
+static float goalDistK(float fieldAngle) {
+  float off = fabsf(wrap180(fieldAngle - 270.0f));
+  if (off <= GOAL_K_DEG1) return 1.0f + (GOAL_K1 - 1.0f) * off / GOAL_K_DEG1;
+  if (off <= GOAL_K_DEG2) return GOAL_K1 + (GOAL_K2 - GOAL_K1) * (off - GOAL_K_DEG1) / (GOAL_K_DEG2 - GOAL_K_DEG1);
+  return GOAL_K2;
+}
+
+// Around our penalty area: the part of v toward the area turns into a sideways (tangent) move,
+// toward the ball's side (no ball: the side v already goes, else the robot's own side)
+static void aroundOurArea(Vec2& v, const MergedBall& ball) {
+  const FieldObj& b = fieldData.back_goal;
+  if (!goalOk(b) || b.dist == PKT_NONE) return;
+  float turn = current_heading() - 90.0f;
+  float fa = b.angle + turn;                                    // field frame
+  float dist = b.dist * goalDistK(fa);
+  float x = -dist * cosf(fa * DEG_TO_RAD), y = -dist * sinf(fa * DEG_TO_RAD);   // robot from goal point
+  float qx = fabsf(x), cx = PA_HALF_CM - PA_R_CM, cy = PA_FRONT_CM - PA_R_CM;
+  float ad = (qx > cx && y > cy) ? hypotf(qx - cx, y - cy) - PA_R_CM : max(qx - PA_HALF_CM, y - PA_FRONT_CM);
+  float ux = cosf(b.angle * DEG_TO_RAD), uy = sinf(b.angle * DEG_TO_RAD);   // toward the area, robot frame
+  float into = v.x * ux + v.y * uy;
+  if (into <= 0) return;
+  float k = min(1.0f, expf(-(ad - AREA_STOP_CM) / AREA_LAMBDA_CM));
+  float tx = -uy, ty = ux;                                      // one tangent; the other is -t
+  float pick;
+  if (ball.src != SRC_NONE) pick = cosf(ball.angle * DEG_TO_RAD) * tx + sinf(ball.angle * DEG_TO_RAD) * ty;
+  else pick = v.x * tx + v.y * ty;
+  if (fabsf(pick) < 0.05f) pick = x * (tx * cosf(-turn * DEG_TO_RAD) + ty * sinf(-turn * DEG_TO_RAD));
+  if (pick < 0) { tx = -tx; ty = -ty; }
+  v.x += k * into * (tx - ux);
+  v.y += k * into * (ty - uy);
 }
 
 static void slowToSides(Vec2& v) {
@@ -268,9 +317,15 @@ void loop() {
   set_ramp(!line.active);            // line escape: full speed at once, no ramp
   if (line.active) {
     mode = M_LINE;
-    v = line.v;
     set_aim(false);
     set_target_heading(90);
+    if (line.line_dir >= 0) {        // keep the move along the line, block only toward it
+      v = attackChase(ball);
+      mode = M_LINE;
+      cutToward(v, line.line_dir, 1.0f);
+      v.x += line.v.x;
+      v.y += line.v.y;
+    }                                // direction not known yet: stop
   } else {
     ShootCtl shot = shoot_control(fieldData);              // as the defense LEAVE
     if (shot.active) {
@@ -283,11 +338,12 @@ void loop() {
       set_target_heading(90);
       v = attackChase(ball);
     }
-    v = Vector_Field(v, fieldData, UsData());            // goals + our penalty area (camera)
-    slowToEnds(v);                                       // A
-    slowToSides(v);                                      // B
-    usLastLine(v, ball, lastV);                          // C
   }
+  aroundOurArea(v, ball);                                // our penalty area: go around it
+  v = Vector_Field(v, fieldData, UsData());              // goals + our penalty area (camera)
+  slowToEnds(v);                                         // A
+  slowToSides(v);                                        // B
+  usLastLine(v, ball, lastV);                            // C
   Vector_Motion(v.x, v.y, 0);
   lastV = v;
 
