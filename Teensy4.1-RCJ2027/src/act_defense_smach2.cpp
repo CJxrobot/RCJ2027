@@ -7,7 +7,10 @@
 // the front ones that ride the penalty line (ch RING_FREE_FROM..RING_FREE_TO), pushes the robot
 // away from it: at least BACK_SPEED along the sum of "away" directions (never backward: deeper).
 //   ring left AND right side on a line -> it is the front line under the robot -> straight back
-// LEAVE and RETURN are not changed.
+// LEAVE and RETURN are not changed by the ring guard.
+// Also (2026-11-24): LEAVE up to 4 s; every move at least MIN_SPEED (15 %); back sensor on a line
+// -> camera decides front line (RETURN) / deep (forward) with BACK_LINE_SPLIT_CM; RETURN backward
+// is never cut below FINE_SPEED by the back ultrasonic while the camera says outside the line.
 // Ball: final_ball_data = IR only for now; switch the commented line to use camera + IR.
 //
 // Rules 2.6 / 2.8: never FULLY inside our penalty area (the line is part of the area).
@@ -64,6 +67,13 @@
 #define DRIFT_K_L         0.0f  // moving left (measure)
 #define LOCK_HEAD_DEG     10.0f // corner lock only facing 90 +- this (like the reference program)
 // Pushed back into the area (opponent): forward, speed rising (reference program)
+// Smallest move: a speed above 0 but under this does not move the real robot (stuck on the
+// field 2026-11-24). Any move slower than this (not 0) is raised to it, keeping its direction.
+#define MIN_SPEED         15.0f
+// Back sensor on a line, no front sensor: the camera says which line it is.
+// Robot centre more than this outside the penalty line -> it is the front line (robot outside)
+// -> RETURN; else it is the goal / side line behind a deep robot -> forward.
+#define BACK_LINE_SPLIT_CM 3.0f
 #define RECOVER_SPEED     30.0f // start
 #define RECOVER_MAX       60.0f // most
 #define RECOVER_RAMP      0.01f // % per ms (30 -> 60 in 3 s)
@@ -92,7 +102,7 @@
 #define ORBIT_SPEED      25.0f // LEAVE, out of the area: slow circle around the ball to get it to 90
 #define LEAVE_FAR_SPEED  60.0f // LEAVE speed limit with the ball far (IR closeness 0) ...
 #define LEAVE_NEAR_SPEED 30.0f // ... down to this with the ball close (closeness 1): no running over it
-#define LEAVE_MAX_MS     3000  // longest time out of the penalty area
+#define LEAVE_MAX_MS     4000  // longest time out of the penalty area
 #define LEAVE_MAX_DIST_CM 90.0f // back goal farther than this: too far, return
 #define BALL_LOST_MS     200   // no ball for this long: return
 #define BEHIND_DEG       60.0f // ball within 270 +- this: behind the robot, return
@@ -350,7 +360,10 @@ static bool backGoalOk() {
 //   failed sensor:  x US_FAIL_K
 //   slow = true:    to US_*_KP x (cm - stop), 0 at the stop (back: the lower limit)
 //   slow = false:   only the stop (back: no backward below the lower limit)
-static void usGuard(Vec2& v, uint8_t mask, bool slow, const OurGoal& goal, const MergedBall& ball) {
+// minBack: backward never cut below this (RETURN with the camera saying the robot is still outside
+// the line: camera first, a wrong back reading must not stop the robot)
+static void usGuard(Vec2& v, uint8_t mask, bool slow, const OurGoal& goal, const MergedBall& ball,
+                    float minBack = 0) {
   for (int i = 0; i < 4; i++) {
     if (!(mask & (1 << i))) continue;
     float ux = cosf(usDir[i] * DEG_TO_RAD), uy = sinf(usDir[i] * DEG_TO_RAD);
@@ -366,6 +379,7 @@ static void usGuard(Vec2& v, uint8_t mask, bool slow, const OurGoal& goal, const
     if (d <= 0)    lim = into * US_FAIL_K;
     else if (slow) lim = max(0.0f, (back ? US_BACK_KP : US_WALL_KP) * (d - stop));
     else           lim = d < stop ? 0 : into;
+    if (back) lim = max(lim, min(into, minBack));
     if (into > lim) { v.x -= (into - lim) * ux; v.y -= (into - lim) * uy; }
   }
 }
@@ -633,6 +647,7 @@ void loop() {
   if (ball.src != SRC_NONE || has_ball()) lastBallSeen = now;
 
   Vec2 v;
+  bool shooting = false;
   set_aim(false);
   set_target_heading(90);
   set_ramp(st != DEFEND);            // DEFEND line following reacts at once; LEAVE / RETURN ramp
@@ -675,7 +690,7 @@ void loop() {
       // Line ONLY behind (back sensor, no front sensor): robot is outside -> camera brings it back.
       // Back AND front on lines (corner, curve): stay in DEFEND, the front sensors decide.
       if (seen(state, BACK) && !seen(state, FRONT_ANY)) {
-        if (areaDist(goal) > 0) { go(RETURN, "back sensor on the line"); break; }
+        if (areaDist(goal) > BACK_LINE_SPLIT_CM) { go(RETURN, "back sensor on the front line"); break; }
         linePos = LP_UNKNOWN;          // camera: robot inside = goal / side line behind it -> forward
       }
       v = defendMotion(state, ball, goal);
@@ -693,6 +708,7 @@ void loop() {
       if (now - stStart > LEAVE_MAX_MS)                          { leaveEnd("time up"); break; }
 
       ShootCtl shot = shoot_control(fieldData);
+      shooting = shot.active;
       if (shot.active) {
         v = shot.v;
         set_aim(shot.aiming);
@@ -777,10 +793,15 @@ void loop() {
       slowToSideLines(v, goal);                         // camera: slow down before a side line
       // ultrasonic: side walls, and backward slows down to 0 at the back lower limit
       // (never fully inside the area, rules 2.6 / 2.8)
-      usGuard(v, (1 << US_N_RIGHT) | (1 << US_N_LEFT) | (1 << US_N_BACK), true, goal, ball);
+      usGuard(v, (1 << US_N_RIGHT) | (1 << US_N_LEFT) | (1 << US_N_BACK), true, goal, ball,
+              areaDist(goal) > 0 ? (float)FINE_SPEED : 0.0f);
       break;
     }
   }
+
+  // Smallest move (not while shooting: the aim needs its own small moves)
+  float sp = hypotf(v.x, v.y);
+  if (!shooting && sp > 0.5f && sp < MIN_SPEED) { v.x *= MIN_SPEED / sp; v.y *= MIN_SPEED / sp; }
 
   // Body drift: cancel the forward drift of a sideways move (last, after every limit: it is not a
   // move of its own, it only keeps the real path straight sideways)
@@ -794,10 +815,10 @@ void loop() {
 
   EVERY_MS(tp, 200) {
     Serial.printf("%-6s (%s) | ball %-4s %5.1f | goal %s %5.1f %4u > %3.0f cm | line %d %08lX | hold %d | "
-                  "us R %3.0f B %3.0f L %3.0f | lock %c%c | v (%4.0f, %4.0f)\n",
+                  "us R %3.0f B %3.0f L %3.0f | lock %c%c | area %4.0f | v (%4.0f, %4.0f)\n",
                   stateName[st], why, ball_src_name(ball.src), ball.angle,
                   fieldData.back_goal.seen ? "Y" : "-", fieldData.back_goal.angle, fieldData.back_goal.dist,
                   goal.dist, line_flag(), state, has_ball(), usCm(US_N_RIGHT), usCm(US_N_BACK), usCm(US_N_LEFT),
-                  lockL ? 'L' : '-', lockR ? 'R' : '-', v.x, v.y);       // raw -> corrected
+                  lockL ? 'L' : '-', lockR ? 'R' : '-', areaDist(goal), v.x, v.y);       // raw -> corrected
   }
 }
