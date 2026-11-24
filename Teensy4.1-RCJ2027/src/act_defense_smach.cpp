@@ -35,7 +35,8 @@
 #define SPEED       30  // forward / backward on the penalty line
 #define BACK_SPEED  15  // backing off from a side line
 #define FINE_SPEED  15  // small forward / back correction around the F_out stop point
-#define DEF_SIDE_GOAL_DEG 65.0f // camera guard: back goal more than this off 270 -> no further away sideways
+#define DEF_SLOW_GOAL_DEG 45.0f // camera: back goal more than this off 270 -> sideways move away from it slows ...
+#define DEF_SIDE_GOAL_DEG 65.0f // ... down to 0 here (end of the penalty line)
 
 // ----- DEFEND: sideways -----
 #define DEF_SIDE_KP      1.0f  // sideways speed per deg the ball is off the ball - goal line
@@ -76,6 +77,13 @@
 #define PA_R_CM          15.0f // rounded front corners
 #define DEPTH_FLOOR_CM   9.5f  // camera: robot centre deeper than this behind the front line -> forward first
                                // (normal spot ~8 cm, fully inside from 10 cm: front 11 cm vs line 1 cm)
+// Field side lines (LEAVE / RETURN): robot x from the camera goal ANGLES (both goals + gyro),
+// speed toward a side line cut exponentially (same law as the library's walls / goals)
+#define FIELD_HALF_LEN_CM 109.5f // goal (camera point) from the field centre
+#define FIELD_HALF_W_CM   78.0f  // side line (centre) from the field centre
+#define SIDE_STOP_CM      14.0f  // robot centre this far from the side line: no more speed toward it
+                                 // (robot 11 + half line 1 + 2 margin)
+#define SIDE_LAMBDA_CM    20.0f  // slow-down length (stops ~64 cm from the centre at chase speed in the sim)
 #define RETURN_TURN_DEG  20.0f // DEFEND / RETURN: heading more than this off 90: stop and turn first
 
 // Sensors as lineState bits (ring = mux 1 channel 0-15, mux 2 = channel + 16)
@@ -247,9 +255,12 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
 
   // Camera guard: goal far off to one side = robot near the end of the penalty line,
   // do not move further away from the goal (replaces the old 300 ms memory)
+  // Camera angle slow-down: goal more than DEF_SLOW_GOAL_DEG off 270 = robot near the end of
+  // the penalty line. Moving further away from the goal: speed falls linearly to 0 at
+  // DEF_SIDE_GOAL_DEG (the line sensors are only the last safety).
   float g = wrap180(goal.angle - 270.0f);            // robot right of the goal -> g < 0
-  if (g < -DEF_SIDE_GOAL_DEG) v.x = min(v.x, 0.0f);
-  if (g >  DEF_SIDE_GOAL_DEG) v.x = max(v.x, 0.0f);
+  float k = constrain((DEF_SIDE_GOAL_DEG - fabsf(g)) / (DEF_SIDE_GOAL_DEG - DEF_SLOW_GOAL_DEG), 0.0f, 1.0f);
+  if ((g < 0 && v.x > 0) || (g > 0 && v.x < 0)) v.x *= k;
   defBlocked = (wantX > 0 && v.x <= 0) || (wantX < 0 && v.x >= 0);
 
   // Camera depth floor (rules 2.6 / 2.8): the sensors can be on a side line / curve while the
@@ -263,6 +274,40 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
     if ((gx > 0 && v.x < 0) || (gx < 0 && v.x > 0)) v.x = 0;
   }
   return v;
+}
+
+// ----- Field side lines (LEAVE / RETURN) -----
+// Robot x on the field (cm, + = right, 0 = centre line between the goals).
+// Both goals seen: from their two ANGLES only (no distances), turned into field directions with
+// the gyro. Robot on the goal-goal line (angles 180 apart): x = 0.
+// Only our goal seen: its angle + distance.
+static float fieldX(const OurGoal& goal) {
+  float turn = current_heading() - 90.0f;                       // robot frame -> field frame
+  float b = (goal.angle + turn) * DEG_TO_RAD;
+  const FieldObj& f = fieldData.front_goal;
+  if (backGoalOk() && f.seen) {
+    float a = (f.angle + turn) * DEG_TO_RAD;
+    float det = sinf(a - b);                                    // 0 when the goals are 180 apart
+    if (fabsf(det) < 0.05f) return 0;
+    return -2.0f * FIELD_HALF_LEN_CM * cosf(b) * cosf(a) / det;
+  }
+  return -goal.dist * cosf(b);
+}
+
+// Cut the part of v (robot frame) that goes toward a side line, more the closer it is
+static void slowToSideLines(Vec2& v, const OurGoal& goal) {
+  float x = fieldX(goal);
+  float turn = current_heading() - 90.0f;
+  for (int s = -1; s <= 1; s += 2) {                            // -1 left line, +1 right line
+    float d = FIELD_HALF_W_CM - s * x;                          // centre to that side line
+    float dir = (s > 0 ? 0.0f : 180.0f) - turn;                 // its direction, robot frame
+    float ux = cosf(dir * DEG_TO_RAD), uy = sinf(dir * DEG_TO_RAD);
+    float into = v.x * ux + v.y * uy;
+    if (into <= 0) continue;                                    // moving away / along: keep
+    float k = min(1.0f, expf(-(d - SIDE_STOP_CM) / SIDE_LAMBDA_CM));
+    v.x -= k * into * ux;
+    v.y -= k * into * uy;
+  }
 }
 
 // LEAVE: line handling only near the side of the field
@@ -442,6 +487,8 @@ void loop() {
         if (seen(state, leftSide.mid | leftSide.in))       v.x = max(v.x, 0.0f);
       }
 
+      slowToSideLines(v, goal);                         // camera: slow down before a side line
+
       if (leaveLineOn(us)) {
         LineCtl line = back_to_field(got & SENSE_GOT_LINE);
         if (line.active) { v = line.v; set_aim(false); set_target_heading(90); set_ramp(false); }
@@ -481,6 +528,7 @@ void loop() {
       // and does not slide fully into the area (rules 2.6 / 2.8)
       bool onLine = seen(state, BACK | RING_ALL);
       v = polarV(onLine ? FINE_SPEED : RETURN_SPEED, dir);
+      slowToSideLines(v, goal);                         // camera: slow down before a side line
       break;
     }
   }
