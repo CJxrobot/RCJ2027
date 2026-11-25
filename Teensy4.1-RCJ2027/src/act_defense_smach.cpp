@@ -50,12 +50,6 @@
 #define FINE_SPEED  15  // small forward / back correction around the ring stop point
 #define DEF_SLOW_GOAL_DEG 35.0f // camera: back goal more than this off 270 -> sideways move away from it slows ...
 #define DEF_SIDE_GOAL_DEG 60.0f // ... down to 0 here (end of the penalty line)
-// Body drift (field 2026-11-24): moving sideways the robot also drifts forward (up), more when
-// moving right. Every state adds a backward part = DRIFT_K x sideways speed, per direction.
-// MEASURE: robot facing 90, drive only sideways for ~1 m, drift forward = dy cm over dx cm
-// sideways -> DRIFT_K = dy / dx (drifting backward instead: negative). 0 = no correction.
-#define DRIFT_K_R         0.10f // moving right (estimate, measure)
-#define DRIFT_K_L         0.0f  // moving left (measure)
 #define LOCK_HEAD_DEG     10.0f // corner lock only facing 90 +- this (like the reference program)
 // Pushed back into the area (opponent): forward, speed rising (reference program)
 #define RECOVER_SPEED     30.0f // start
@@ -750,10 +744,6 @@ void loop() {
       break;
     }
   }
-
-  // Body drift: cancel the forward drift of a sideways move (last, after every limit: it is not a
-  // move of its own, it only keeps the real path straight sideways)
-  v.y -= (v.x > 0 ? DRIFT_K_R : DRIFT_K_L) * fabsf(v.x);
 
   // Corner locked and nothing to do: motors cut (reference program). Only while still facing
   // 90 +- LOCK_HEAD_DEG: turned (pushed) -> Vector_Motion turns it back first.
