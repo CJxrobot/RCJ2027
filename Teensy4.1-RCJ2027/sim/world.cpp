@@ -93,6 +93,7 @@ struct Scenario {
   float pushT = -1, pushX = 0, pushY = 0;       // at pushT the robot is moved to (pushX, pushY)
   int usDead = 0;                               // ultrasonic that read nothing: bit 0 front, 1 right, 2 back, 3 left
   float shoveFrom = -1, shoveTo = -1, shoveVx = 0, shoveVy = 0;   // opponent pushes (cm/s, world) in this time
+  float camScale = 1.0f;                        // back goal distance x this (camera error: < 1 reads short)
 };
 
 std::vector<Scenario> scenarios = {
@@ -189,6 +190,10 @@ std::vector<Scenario> scenarios = {
    20, -91, 90, 3, {{0, 30, -50, true}, {1.0f, 30, -50, true}, {1.05f, -65, -82, true}}},
   {"corner_unlock", "Robot locked at the right corner, then the ball goes far left: unlock, slide over",
    0, -91, 90, 6, {{0, 75, -70, true}, {3.0f, 75, -70, true}, {3.05f, -75, -70, true}}},
+  {"corner_cam_short", "Field 2026-11-25 (smach3): no ball, robot right of the goal at the F_out stop, camera reads ~7 % short (goal 235, 25 cm)",
+   14, -92.6f, 90, 4, {}, -1, -1, -1, 0, 0, 0, -1, -1, 0, 0, 0.93f},
+  {"corner_cam_short_left", "Same on the left",
+   -14, -92.6f, 90, 4, {}, -1, -1, -1, 0, 0, 0, -1, -1, 0, 0, 0.93f},
   {"shoved_right", "Robot at the right end of the penalty line, opponent shoves it right (50 cm/s, 2.0-2.4 s) past the side line",
    0, -91, 90, 5, {{0, 75, -70, true}}, -1, -1, -1, 0, 0, 0, 2.0f, 2.4f, 50, 0},
   {"shoved_left", "Same on the left",
@@ -364,7 +369,7 @@ void sendCamera() {
   float t = sim_us / 1e6f;
   bool ours = !(t >= sc->camOffFrom && t < sc->camOffTo);
   if (!ours) p[2] &= ~CAM_FLAG_BACK;
-  float backRead = dist(0, -CAM_GOAL_Y) / camSlantK(robotAngle(0, -CAM_GOAL_Y));   // reads long at a slant
+  float backRead = dist(0, -CAM_GOAL_Y) / camSlantK(robotAngle(0, -CAM_GOAL_Y)) * sc->camScale;   // long at a slant
   putObj(p, 11, ours, 0, -CAM_GOAL_Y, (uint16_t)lroundf(backRead));               // back goal (ours)
   p[15] = camSeq++;
   p[16] = pkt_sum(p, 1, 15);

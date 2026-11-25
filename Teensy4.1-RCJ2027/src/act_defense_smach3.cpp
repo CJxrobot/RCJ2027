@@ -12,6 +12,7 @@
 // Margin to "fully inside" (centre 10 cm behind the line centre): ~2 cm at the stop point.
 // Everything else (side arms, corner lock, ring guard, LEAVE, RETURN, ultrasonic) as smach2;
 // RETURN aims at the new stop point (STOP_CM 8), the back ultrasonic spot values are 2 cm less.
+// Camera depth floor only while no front sensor is on a line (the line sensors know better).
 //
 // From act_defense_smach2: plus (DEFEND only, no memory): the WHOLE mux 1 ring (16 channels,
 // 6.1 cm, inside every arm sensor) must never go over a line. Any ring channel on a line, except
@@ -521,9 +522,13 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   // robot is deeper than the front line allows (e.g. at the corner of the area). Deeper than
   // DEPTH_FLOOR_CM behind the FRONT line: come forward first, no sliding toward the middle
   // (there the whole robot would be inside the area).
+  // smach3: not while a front sensor (F_in / ring / F_out) is on a line: then the line sensors
+  // know the depth better than the camera (field 2026-11-25: F_out alone on the line = 8 cm,
+  // camera said 9.5 at goal 235 -> forward 30 / sideways 0, back and forth). Backing on a front
+  // sensor stops at F_out, and F_out losing the line sends the robot forward at once.
   float gx = -goal.dist * cosf(goal.angle * DEG_TO_RAD);     // robot x from the goal centre
   float gy = -goal.dist * sinf(goal.angle * DEG_TO_RAD);     // robot y from the goal line
-  if (gy < PA_FRONT_CM - DEPTH_FLOOR_CM) {
+  if (!seen(state, FRONT_ANY) && gy < PA_FRONT_CM - DEPTH_FLOOR_CM) {
     v.y = max(v.y, (float)SPEED);
     if ((gx > 0 && v.x < 0) || (gx < 0 && v.x > 0)) v.x = 0;
   }
