@@ -47,6 +47,11 @@
 #define ORBIT_SLOW_DEG 60.0f  // ... up to ORBIT_SPEED3 from this far off the front
 #define LINE_ESCAPE3   40.0f  // on the line: away from it
 #define LINE_SIDE_DEG  90.0f  // line direction updates only within this of the first one
+// Broken ring channels, Act side (emergency, no Sense flash needed; sense.cpp has its own mask).
+// Bit ch = ring channel ch (angle ch x 22.5). Masked channels are never "line". The line is
+// judged from the ring bits here, not from the Sense flag pin (a broken channel or mux 2 noise
+// on the Sense side would keep that pin on).
+#define LINE_IGNORE3   0x0080UL  // ch 7 (157.5 deg) broken (2026-11-25); 0 = none
 #define CHASE_SPEED3   50.0f  // far ball: straight at it
 #define ORBIT_SPEED3   40.0f  // near ball: around it
 #define STR_ORBIT      5      // IR strength from here: orbit, below: straight at the ball
@@ -116,7 +121,7 @@ static float toward(const Vec2& v, float dir) {
 static void lineGuard(Vec2& v, uint8_t got) {
   LineCtl line = back_to_field(got & SENSE_GOT_LINE);   // only for line_dir
   float turn = current_heading() - 90.0f;
-  lineOn = line_flag();
+  lineOn = (lineData.state & 0xFFFFUL) != 0xFFFFUL;    // ring only, masked (see loop)
   if (lineOn && line.line_dir >= 0) {
     float d = line.line_dir + turn;
     if (!lineLock) { lineLock = true; lineInitField = d; lineDirField = d; }
@@ -170,6 +175,7 @@ void loop() {
   update_gyro_sensor();
   read_camera();
   uint8_t got = read_sense();
+  lineData.state |= LINE_IGNORE3;    // broken channels never "line" (also for back_to_field)
   kicker_update();
 
   if (picked_up()) {                 // lifted: stop, start again from heading 90
