@@ -70,10 +70,11 @@ void setup() {
   us_begin();
 }
 
-// Every 2 s on USB: which robot this flash is for and which ring channels are masked
+// Attack flash only (USE_MUX2 0), every 2 s on USB: the robot and the masked ring channels.
+// The defense flash (USE_MUX2 1) prints nothing: unchanged.
 static void printConfig() {
   static uint32_t last = 0;
-  if (millis() - last < 2000) return;
+  if (USE_MUX2 || millis() - last < 2000) return;
   last = millis();
   Serial.printf("SENSE %s robot: USE_MUX2 %d, ring mask 0x%04lX (masked: never line)\n",
                 USE_MUX2 ? "DEFENSE" : "ATTACK", USE_MUX2, (unsigned long)M1_IGNORE);
