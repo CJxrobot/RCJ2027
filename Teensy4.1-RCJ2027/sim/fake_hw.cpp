@@ -27,6 +27,7 @@ void digitalWrite(uint8_t pin, uint8_t value) { pins[pin] = value; }
 int digitalRead(uint8_t pin) { return pins[pin]; }
 void analogWrite(uint8_t pin, int value) { pins[pin] = value; }
 void attachInterrupt(uint8_t pin, void (*fn)(), int) { isr[pin] = fn; }
+void detachInterrupt(uint8_t pin) { isr[pin] = nullptr; }
 
 int sim_pin(uint8_t pin) { return pins[pin]; }
 

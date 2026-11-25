@@ -43,6 +43,7 @@ inline void analogWriteFrequency(uint8_t, float) {}
 inline void analogWriteResolution(int) {}
 inline int  analogRead(uint8_t) { return 0; }
 void attachInterrupt(uint8_t pin, void (*fn)(), int mode);
+void detachInterrupt(uint8_t pin);
 inline uint8_t digitalPinToInterrupt(uint8_t pin) { return pin; }
 inline void noInterrupts() {}
 inline void interrupts() {}

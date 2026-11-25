@@ -14,7 +14,7 @@
 //   IR strength <  STR_ORBIT -> straight at the ball, CHASE_SPEED3
 //   no ball                 -> stop
 //   white line (no timer):
-//     first touch -> init = line direction (back_to_field's line_dir, field frame), LOCK
+//     first touch -> init = line direction (line_angle of the masked ring bits, field frame), LOCK
 //     line seen   -> current direction updates dir only while within LINE_SIDE_DEG (90) of init:
 //                    past the middle of the line the sensors see it on the other side, that
 //                    one is ignored (dir stays). Move: the part of the wanted move toward dir is
@@ -48,9 +48,11 @@
 #define LINE_ESCAPE3   40.0f  // on the line: away from it
 #define LINE_SIDE_DEG  90.0f  // line direction updates only within this of the first one
 // Broken ring channels, Act side (emergency, no Sense flash needed; sense.cpp has its own mask).
-// Bit ch = ring channel ch (angle ch x 22.5). Masked channels are never "line". The line is
-// judged from the ring bits here, not from the Sense flag pin (a broken channel or mux 2 noise
-// on the Sense side would keep that pin on).
+// Bit ch = ring channel ch (angle ch x 22.5). Masked channels are never "line". Everything about
+// the line here comes from the masked ring bits ONLY: the Sense flag pins (PIN_0 / PIN_1) cannot
+// be masked on the Act side (a broken channel, or mux 2 noise with USE_MUX2 1, keeps them on and
+// their interrupt stops the motors), so this program detaches that interrupt and does not use
+// line_flag() / back_to_field().
 #define LINE_IGNORE3   0x0080UL  // ch 7 (157.5 deg) broken (2026-11-25); 0 = none
 #define CHASE_SPEED3   50.0f  // far ball: straight at it
 #define ORBIT_SPEED3   40.0f  // near ball: around it
@@ -112,18 +114,22 @@ static Vec2 chase3() {
   return polarV(speed, a + (off > 0 ? add : -add));
 }
 
+static float wrap360f(float a) { a = fmodf(a, 360.0f); return a < 0 ? a + 360.0f : a; }
+
 // Part of v going toward dir (robot frame, deg)
 static float toward(const Vec2& v, float dir) {
   return v.x * cosf(dir * DEG_TO_RAD) + v.y * sinf(dir * DEG_TO_RAD);
 }
 
 // White line (no timer, see the top)
-static void lineGuard(Vec2& v, uint8_t got) {
-  LineCtl line = back_to_field(got & SENSE_GOT_LINE);   // only for line_dir
+static void lineGuard(Vec2& v) {
   float turn = current_heading() - 90.0f;
-  lineOn = (lineData.state & 0xFFFFUL) != 0xFFFFUL;    // ring only, masked (see loop)
-  if (lineOn && line.line_dir >= 0) {
-    float d = line.line_dir + turn;
+  uint32_t ring = lineData.state | 0xFFFF0000UL;        // ring only, masked (see loop)
+  lineOn = ring != 0xFFFFFFFFUL;
+  // line direction from the ring, robot frame; opposite sensors cancel -> the locked side
+  float lineDir = lineOn ? line_angle(ring, lineLock ? wrap360f(lineDirField - turn) : -1.0f) : -1.0f;
+  if (lineOn && lineDir >= 0) {
+    float d = lineDir + turn;
     if (!lineLock) { lineLock = true; lineInitField = d; lineDirField = d; }
     else if (fabsf(wrap180(d - lineInitField)) <= LINE_SIDE_DEG) lineDirField = d;
   }
@@ -140,6 +146,8 @@ static void lineGuard(Vec2& v, uint8_t got) {
 void setup() {
   set_motor_reverse(MOTOR_REVERSE);   // before anything moves a motor
   core_act_init();
+  detachInterrupt(digitalPinToInterrupt(PIN_0));   // Sense line pins: not maskable here (see top)
+  detachInterrupt(digitalPinToInterrupt(PIN_1));
   camera_begin();
   kicker_begin();
   strategy_begin();
@@ -152,6 +160,7 @@ void setup() {
     update_gyro_sensor();
     read_camera();
     read_sense();
+    lineData.state |= LINE_IGNORE3;
     kicker_update();
     if (millis() - lastDraw >= 100) {
       lastDraw = millis();
@@ -163,7 +172,8 @@ void setup() {
       display.printf("Head %.1f\n", current_heading());
       display.printf("Ball %s %.0f s%u\n", irBall.found ? "Y" : "-", irBall.angle, irBall.strength);
       display.printf("Hold %d  Kick %s\n", has_ball(), kicker_state_name());
-      display.printf("Line %04lX\n", lineData.state & 0xFFFF);
+      display.printf("Line %04lX mask %04lX\n", lineData.state & 0xFFFF, LINE_IGNORE3);
+      display.printf("Sense pin %d (raw)\n", line_flag());
       display.display();
     }
   }
@@ -174,8 +184,8 @@ void setup() {
 void loop() {
   update_gyro_sensor();
   read_camera();
-  uint8_t got = read_sense();
-  lineData.state |= LINE_IGNORE3;    // broken channels never "line" (also for back_to_field)
+  read_sense();
+  lineData.state |= LINE_IGNORE3;    // broken channels never "line"
   kicker_update();
 
   if (picked_up()) {                 // lifted: stop, start again from heading 90
@@ -198,7 +208,7 @@ void loop() {
     v = chase3();
   }
 
-  lineGuard(v, got);
+  lineGuard(v);
   set_ramp(!lineLock);               // locked: the brake works at once
 
   if (mode == M3_NONE && !lineOn) MotorStop();

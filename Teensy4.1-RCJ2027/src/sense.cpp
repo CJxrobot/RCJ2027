@@ -70,6 +70,15 @@ void setup() {
   us_begin();
 }
 
+// Every 2 s on USB: which robot this flash is for and which ring channels are masked
+static void printConfig() {
+  static uint32_t last = 0;
+  if (millis() - last < 2000) return;
+  last = millis();
+  Serial.printf("SENSE %s robot: USE_MUX2 %d, ring mask 0x%04lX (masked: never line)\n",
+                USE_MUX2 ? "DEFENSE" : "ATTACK", USE_MUX2, (unsigned long)M1_IGNORE);
+}
+
 void loop() {
   fast_update_line_sensor();                 // 1. line
   if (calibrate_line_sensor()) return;       // calibrating: send nothing
@@ -77,6 +86,7 @@ void loop() {
   send_line_state();                         // 2. PIN_0/PIN_1 + packet (line + newest ball)
   digitalWriteFast(LED_BUILTIN, lineState != 0xFFFFFFFF);
 
+  printConfig();
   update_ir_ball();                          // 3. ball, goes out with the next packet
   if (us_update()) send_us_packet();         // 4. ultrasonic
 
