@@ -8,6 +8,7 @@
 // away from it: at least BACK_SPEED along the sum of "away" directions (never backward: deeper).
 //   ring left AND right side on a line -> it is the front line under the robot -> straight back
 // LEAVE and RETURN are not changed by the ring guard.
+// Camera depth floor only while no front sensor is on a line (2026-11-25).
 // Collisions (2026-11-24): corner lock released when the camera says the robot was pushed back
 // toward our goal; ring lost while standing still -> the camera says which way it was moved.
 // Also (2026-11-24): LEAVE up to 4 s; every move at least MIN_SPEED (15 %); back sensor on a line
@@ -522,9 +523,12 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   // robot is deeper than the front line allows (e.g. at the corner of the area). Deeper than
   // DEPTH_FLOOR_CM behind the FRONT line: come forward first, no sliding toward the middle
   // (there the whole robot would be inside the area).
+  // Not while a front sensor (F_in / ring / F_out) is on a line: then the line sensors know the
+  // depth better than the camera (field 2026-11-25, smach3: camera 1.5 cm too deep at goal 235
+  // -> forward 30 / sideways 0, back and forth). Pushed back: ring -> F_out catches it.
   float gx = -goal.dist * cosf(goal.angle * DEG_TO_RAD);     // robot x from the goal centre
   float gy = -goal.dist * sinf(goal.angle * DEG_TO_RAD);     // robot y from the goal line
-  if (gy < PA_FRONT_CM - DEPTH_FLOOR_CM) {
+  if (!seen(state, FRONT_ANY) && gy < PA_FRONT_CM - DEPTH_FLOOR_CM) {
     v.y = max(v.y, (float)SPEED);
     if ((gx > 0 && v.x < 0) || (gx < 0 && v.x > 0)) v.x = 0;
   }
