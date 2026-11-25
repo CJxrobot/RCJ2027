@@ -17,8 +17,11 @@
 //
 // Orbit (exponential in the IR strength, the closer the ball the wider around it):
 //   off = how far the ball is off the front (-180..180)
-//   g   = min(1, exp((strength - STR_FULL) / STR_LAMBDA))     strength 5 -> 0.26, 7 -> 0.51, 9 -> 1
-//   dir = ball angle + sign(off) x min(|off|, ORBIT_MAX_DEG) x g
+//   g   = min(1, exp((strength - STR_FULL) / STR_LAMBDA))     strength 5 -> 0.50, 6 -> 0.71, 7+ -> 1
+//   add = min(ORBIT_MAX_DEG, |off| x ORBIT_K) x g, at least ORBIT_MIN_DEG (ball in the back half:
+//         ORBIT_MIN_BACK_DEG) so a near ball is never driven straight at
+//   dir = ball angle + sign(off) x add
+//   strength 5: ball 60-180 deg off the front -> 45 deg (field 2026-11-25: "about 45 at 5")
 //
 // Serial every 200 ms: mode | ball angle / strength | hold | v
 
@@ -26,9 +29,12 @@
 #define CHASE_SPEED3   50.0f  // far ball: straight at it
 #define ORBIT_SPEED3   40.0f  // near ball: around it
 #define STR_ORBIT      5      // IR strength from here: orbit, below: straight at the ball
-#define STR_FULL       9.0f   // IR strength of a ball right at the robot: full offset
-#define STR_LAMBDA     3.0f
-#define ORBIT_MAX_DEG  90.0f  // largest offset from the ball angle
+#define STR_FULL       7.0f   // IR strength from here: full offset
+#define STR_LAMBDA     2.9f   // g = 0.5 at strength 5
+#define ORBIT_K        1.5f   // offset = how far off the front x this ...
+#define ORBIT_MAX_DEG  90.0f  // ... at most this
+#define ORBIT_MIN_DEG  35.0f  // near ball, front half: at least this (never straight at it)
+#define ORBIT_MIN_BACK_DEG 60.0f // near ball, back half (> 90 off the front): at least this
 
 enum Mode3 : uint8_t { M3_NONE, M3_SHOT, M3_PUSH, M3_CHASE, M3_ORBIT };
 static const char* modeName3[] = {"NOBALL", "SHOT", "PUSH", "CHASE", "ORBIT"};
@@ -51,7 +57,8 @@ static Vec2 chase3() {
   if (irBall.strength < STR_ORBIT) { mode = M3_CHASE; return polarV(CHASE_SPEED3, a); }
   mode = M3_ORBIT;
   orbitG = min(1.0f, expf((irBall.strength - STR_FULL) / STR_LAMBDA));
-  float add = min(fabsf(off), (float)ORBIT_MAX_DEG) * orbitG;
+  float add = min((float)ORBIT_MAX_DEG, fabsf(off) * ORBIT_K) * orbitG;
+  add = max(add, fabsf(off) > 90.0f ? (float)ORBIT_MIN_BACK_DEG : (float)ORBIT_MIN_DEG);
   return polarV(ORBIT_SPEED3, a + (off > 0 ? add : -add));
 }
 
