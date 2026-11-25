@@ -392,11 +392,12 @@ void sendCamera() {
 }
 
 // ===================== Physics =====================
-// Wheel speeds (%) from the motor pins: PWM 0-255, DIR HIGH = forward (SetMotorSpeed)
+// Wheel speeds (%) from the motor pins: PWM 0-255, DIR HIGH = forward (SetMotorSpeed);
+// attack body (motor_reverse()): wired the other way, DIR LOW = forward
 void readWheels(float cmd[4]) {
   const uint8_t dirPins[4] = MOTOR_DIR_PINS, pwmPins[4] = MOTOR_PWM_PINS;
   for (int i = 0; i < 4; i++)
-    cmd[i] = sim_pin(pwmPins[i]) * 100.0f / 255.0f * (sim_pin(dirPins[i]) ? 1 : -1);
+    cmd[i] = sim_pin(pwmPins[i]) * 100.0f / 255.0f * ((sim_pin(dirPins[i]) != 0) != motor_reverse() ? 1 : -1);
 }
 
 // Wheels -> body speed: least-squares inverse of RobotIKControl()

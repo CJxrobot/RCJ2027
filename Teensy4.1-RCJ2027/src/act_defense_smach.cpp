@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <core_act.h>
 
+// Motor direction of this robot body: 1 = attack body (wired the other way), 0 = defense body
+#define MOTOR_REVERSE 0
+
 // T12 (Act): defense robot as a state machine
 // Ball: final_ball_data = IR only for now; switch the commented line to use camera + IR.
 //
@@ -538,6 +541,7 @@ __attribute__((unused)) static MergedBall merge_ball_data(const FieldData& field
 }
 
 void setup() {
+  set_motor_reverse(MOTOR_REVERSE);   // before anything moves a motor
   core_act_init();
   camera_begin();
   kicker_begin();
