@@ -5,15 +5,21 @@
 #define MOTOR_REVERSE 1
 
 // T11c (Act): attack robot, BASIC chase (act_attack / act_attack2 are not changed)
-// NO white line check yet: the robot CAN go out. Test on the field with someone watching,
-// or with the wheels off the ground first to check the motor direction.
 //
 //   picked up               -> motors off
 //   ball held               -> shoot_control() (push while turning to the goal, kick; as defense)
-//   ball 90 +- PUSH_DEG     -> forward, PUSH_SPEED3
-//   IR strength >= STR_ORBIT -> around the ball (exponential, see below), ORBIT_SPEED3
+//   ball 90 +- PUSH_DEG3    -> forward: PUSH_SLOW3 for PUSH_SLOW_MS, then PUSH_SPEED3
+//   IR strength >= STR_ORBIT -> around the ball (exponential, see below), slower near the front:
+//                              ORBIT_SLOW3 + (ORBIT_SPEED3 - ORBIT_SLOW3) x min(1, |off| / ORBIT_SLOW_DEG)
 //   IR strength <  STR_ORBIT -> straight at the ball, CHASE_SPEED3
 //   no ball                 -> stop
+//   white line (no timer):
+//     line seen  -> LOCK its direction (from back_to_field's line_dir): the part of every move
+//                   toward the line is 0 at once (brake, no ramp); moves along it go on
+//     unlocked   -> only when no sensor sees the line AND the wanted move is not toward it
+//                   (ball still out there: stays locked at the line, no back-and-forth)
+//     line under the robot (two opposite ring sensors on it) -> also LINE_ESCAPE3 away
+//     direction not known yet -> stop
 //
 // Orbit (exponential in the IR strength, the closer the ball the wider around it):
 //   off = how far the ball is off the front (-180..180)
@@ -31,7 +37,13 @@
 //
 // Serial every 200 ms: mode | ball angle / strength | hold | v
 
-#define PUSH_SPEED3    60.0f  // ball in front: forward
+#define PUSH_DEG3      5.0f   // ball this close to 90: push (library PUSH_DEG 10 is kept for defense)
+#define PUSH_SPEED3    60.0f  // ball in front: forward ...
+#define PUSH_SLOW3     40.0f  // ... but this for the first PUSH_SLOW_MS
+#define PUSH_SLOW_MS   300
+#define ORBIT_SLOW3    25.0f  // orbit speed with the ball near the front ...
+#define ORBIT_SLOW_DEG 60.0f  // ... up to ORBIT_SPEED3 from this far off the front
+#define LINE_ESCAPE3   40.0f  // line under the robot: away from it
 #define CHASE_SPEED3   50.0f  // far ball: straight at it
 #define ORBIT_SPEED3   40.0f  // near ball: around it
 #define STR_ORBIT      5      // IR strength from here: orbit, below: straight at the ball
@@ -45,6 +57,9 @@
 static const float WHEEL_BONUS[4] = {2.0f, 2.0f, 2.0f, 2.0f};   // 45, 135, 225, 315 (estimate, measure)
 
 enum Mode3 : uint8_t { M3_NONE, M3_SHOT, M3_PUSH, M3_CHASE, M3_ORBIT };
+static bool lineLock = false;          // white line: direction locked
+static float lineDirField = 0;         // line direction, field frame (robot frame + heading - 90)
+static bool lineDeep = false;          // line under the robot (for the print)
 static const char* modeName3[] = {"NOBALL", "SHOT", "PUSH", "CHASE", "ORBIT"};
 static Mode3 mode = M3_NONE;
 static float orbitG = 0;               // last orbit factor (for the print)
@@ -70,16 +85,56 @@ static float strUsed = 0;              // last compensated strength (for the pri
 static Vec2 chase3() {
   Vec2 v;
   if (!ir_ball_fresh(IR_TIMEOUT_MS)) { mode = M3_NONE; return v; }   // no ball: stop
+  static uint32_t pushStart = 0;
   float a = fmodf(irBall.angle + 360.0f, 360.0f);
   float off = wrap180(a - 90.0f);                                     // > 0: ball left of the front
-  if (fabsf(off) <= PUSH_DEG) { mode = M3_PUSH; return polarV(PUSH_SPEED3, 90.0f); }
+  if (fabsf(off) <= PUSH_DEG3) {
+    if (mode != M3_PUSH) pushStart = millis();
+    mode = M3_PUSH;
+    return polarV(millis() - pushStart < PUSH_SLOW_MS ? PUSH_SLOW3 : PUSH_SPEED3, 90.0f);
+  }
   strUsed = strengthComp(a, irBall.strength);
   if (strUsed < STR_ORBIT) { mode = M3_CHASE; return polarV(CHASE_SPEED3, a); }
   mode = M3_ORBIT;
   orbitG = min(1.0f, expf((strUsed - STR_FULL) / STR_LAMBDA));
   float add = min((float)ORBIT_MAX_DEG, fabsf(off) * ORBIT_K) * orbitG;
   add = max(add, fabsf(off) > 90.0f ? (float)ORBIT_MIN_BACK_DEG : (float)ORBIT_MIN_DEG);
-  return polarV(ORBIT_SPEED3, a + (off > 0 ? add : -add));
+  float speed = ORBIT_SLOW3 + (ORBIT_SPEED3 - ORBIT_SLOW3) * min(1.0f, fabsf(off) / ORBIT_SLOW_DEG);
+  return polarV(speed, a + (off > 0 ? add : -add));
+}
+
+// Part of v going toward dir (robot frame, deg)
+static float toward(const Vec2& v, float dir) {
+  return v.x * cosf(dir * DEG_TO_RAD) + v.y * sinf(dir * DEG_TO_RAD);
+}
+
+// Two opposite ring sensors on a line = the line is under the robot
+static bool lineUnder(uint32_t state) {
+  for (int ch = 0; ch < 8; ch++)
+    if (!(state & (1UL << ch)) && !(state & (1UL << (ch + 8)))) return true;
+  return false;
+}
+
+// White line: lock the direction toward it (no timer, see the top)
+static void lineGuard(Vec2& v, uint8_t got) {
+  LineCtl line = back_to_field(got & SENSE_GOT_LINE);   // only for line_dir
+  float turn = current_heading() - 90.0f;
+  bool on = line_flag();
+  if (on && line.line_dir >= 0) {
+    float d = line.line_dir + turn;
+    // keep the side it was first locked on: past the middle of the line the sensors see it on
+    // the other side, a flip there would push the robot OUT
+    if (!lineLock || fabsf(wrap180(d - lineDirField)) <= 90.0f) lineDirField = d;
+    lineLock = true;
+  }
+  if (on && !lineLock) { v = Vec2(); return; }          // direction not known yet: stop
+  if (!lineLock) return;
+  float dir = lineDirField - turn;                      // robot frame now
+  if (!on && toward(v, dir) <= 0) { lineLock = false; return; }   // wants to go inside: unlock
+  float in = toward(v, dir);
+  if (in > 0) { v.x -= in * cosf(dir * DEG_TO_RAD); v.y -= in * sinf(dir * DEG_TO_RAD); }
+  lineDeep = on && lineUnder(lineData.state);
+  if (lineDeep) { v.x -= LINE_ESCAPE3 * cosf(dir * DEG_TO_RAD); v.y -= LINE_ESCAPE3 * sinf(dir * DEG_TO_RAD); }
 }
 
 void setup() {
@@ -108,7 +163,7 @@ void setup() {
       display.printf("Head %.1f\n", current_heading());
       display.printf("Ball %s %.0f s%u\n", irBall.found ? "Y" : "-", irBall.angle, irBall.strength);
       display.printf("Hold %d  Kick %s\n", has_ball(), kicker_state_name());
-      display.println("NO line check!");
+      display.printf("Line %04lX\n", lineData.state & 0xFFFF);
       display.display();
     }
   }
@@ -119,7 +174,7 @@ void setup() {
 void loop() {
   update_gyro_sensor();
   read_camera();
-  read_sense();
+  uint8_t got = read_sense();
   kicker_update();
 
   if (picked_up()) {                 // lifted: stop, start again from heading 90
@@ -142,12 +197,18 @@ void loop() {
     v = chase3();
   }
 
-  if (mode == M3_NONE) MotorStop();
+  lineDeep = false;
+  lineGuard(v, got);
+  set_ramp(!lineLock);               // locked: the brake works at once
+
+  if (mode == M3_NONE && !lineDeep) MotorStop();
   else Vector_Motion(v.x, v.y, 0);
 
   EVERY_MS(tp, 200) {
-    Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | v (%4.0f, %4.0f)\n",
+    Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | line %04lX %s %5.1f | v (%4.0f, %4.0f)\n",
                   modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
-                  strUsed, orbitG, has_ball(), v.x, v.y);       // strength raw > compensated
+                  strUsed, orbitG, has_ball(), lineData.state & 0xFFFF,
+                  lineDeep ? "DEEP" : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
+                  v.x, v.y);                                    // strength raw > compensated
   }
 }
