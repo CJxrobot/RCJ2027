@@ -23,6 +23,12 @@
 //   dir = ball angle + sign(off) x add
 //   strength 5: ball 60-180 deg off the front -> 45 deg (field 2026-11-25: "about 45 at 5")
 //
+// Wheel shadow (field 2026-11-25): near 45 / 135 / 225 / 315 the wheels hide part of the IR ring,
+// the strength reads low ("far") and the robot drives straight into the ball. The strength used
+// above is compensated: + WHEEL_BONUS[i] at the wheel angle, falling linearly to 0 at
+// WHEEL_ZONE_DEG from it. MEASURE: ball 20 cm away at 90 and at 45 / 135 / 225 / 315, read s on
+// the OLED / Serial: bonus = s(90) - s(wheel angle).
+//
 // Serial every 200 ms: mode | ball angle / strength | hold | v
 
 #define PUSH_SPEED3    60.0f  // ball in front: forward
@@ -35,6 +41,8 @@
 #define ORBIT_MAX_DEG  90.0f  // ... at most this
 #define ORBIT_MIN_DEG  35.0f  // near ball, front half: at least this (never straight at it)
 #define ORBIT_MIN_BACK_DEG 60.0f // near ball, back half (> 90 off the front): at least this
+#define WHEEL_ZONE_DEG 20.0f  // wheel shadow: compensation from the wheel angle out to this
+static const float WHEEL_BONUS[4] = {2.0f, 2.0f, 2.0f, 2.0f};   // 45, 135, 225, 315 (estimate, measure)
 
 enum Mode3 : uint8_t { M3_NONE, M3_SHOT, M3_PUSH, M3_CHASE, M3_ORBIT };
 static const char* modeName3[] = {"NOBALL", "SHOT", "PUSH", "CHASE", "ORBIT"};
@@ -48,15 +56,27 @@ static Vec2 polarV(float speed, float deg) {
   return v;
 }
 
+// IR strength with the wheel shadow compensated
+static float strengthComp(float angle, float str) {
+  float bonus = 0;
+  for (int i = 0; i < 4; i++) {
+    float d = fabsf(wrap180(angle - (45.0f + 90.0f * i)));
+    if (d < WHEEL_ZONE_DEG) bonus = max(bonus, WHEEL_BONUS[i] * (1.0f - d / WHEEL_ZONE_DEG));
+  }
+  return str + bonus;
+}
+static float strUsed = 0;              // last compensated strength (for the print)
+
 static Vec2 chase3() {
   Vec2 v;
   if (!ir_ball_fresh(IR_TIMEOUT_MS)) { mode = M3_NONE; return v; }   // no ball: stop
   float a = fmodf(irBall.angle + 360.0f, 360.0f);
   float off = wrap180(a - 90.0f);                                     // > 0: ball left of the front
   if (fabsf(off) <= PUSH_DEG) { mode = M3_PUSH; return polarV(PUSH_SPEED3, 90.0f); }
-  if (irBall.strength < STR_ORBIT) { mode = M3_CHASE; return polarV(CHASE_SPEED3, a); }
+  strUsed = strengthComp(a, irBall.strength);
+  if (strUsed < STR_ORBIT) { mode = M3_CHASE; return polarV(CHASE_SPEED3, a); }
   mode = M3_ORBIT;
-  orbitG = min(1.0f, expf((irBall.strength - STR_FULL) / STR_LAMBDA));
+  orbitG = min(1.0f, expf((strUsed - STR_FULL) / STR_LAMBDA));
   float add = min((float)ORBIT_MAX_DEG, fabsf(off) * ORBIT_K) * orbitG;
   add = max(add, fabsf(off) > 90.0f ? (float)ORBIT_MIN_BACK_DEG : (float)ORBIT_MIN_DEG);
   return polarV(ORBIT_SPEED3, a + (off > 0 ? add : -add));
@@ -126,8 +146,8 @@ void loop() {
   else Vector_Motion(v.x, v.y, 0);
 
   EVERY_MS(tp, 200) {
-    Serial.printf("%-6s | ball %s %5.1f s%2u | orbit g %.2f | hold %d | v (%4.0f, %4.0f)\n",
+    Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | v (%4.0f, %4.0f)\n",
                   modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
-                  orbitG, has_ball(), v.x, v.y);
+                  strUsed, orbitG, has_ball(), v.x, v.y);       // strength raw > compensated
   }
 }

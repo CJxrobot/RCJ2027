@@ -79,6 +79,17 @@ const uint32_t FRAME_MS = 20;                   // recording rate
 
 // IR strength (number of sensors that see the ball, 1-20). Guess: 20 at contact, about 8 at 40 cm.
 int irStrength(float d) { return constrain((int)lroundf(20.0f * expf(-(d - 13.0f) / 45.0f)), 1, 20); }
+// Wheel shadow (real robot, field 2026-11-25): near 45 / 135 / 225 / 315 the wheels hide part of
+// the IR ring -> fewer sensors see the ball. Guess: -2 at the wheel angle, 0 at 20 deg from it.
+const float IR_WHEEL_SHADOW = 2.0f, IR_WHEEL_ZONE = 20.0f;
+int irShadow(int str, float robotDeg) {
+  float cut = 0;
+  for (int i = 0; i < 4; i++) {
+    float d = fabsf(wrap180(robotDeg - (45.0f + 90.0f * i)));
+    if (d < IR_WHEEL_ZONE) cut = max(cut, IR_WHEEL_SHADOW * (1.0f - d / IR_WHEEL_ZONE));
+  }
+  return max(1, (int)lroundf(str - cut));
+}
 // Camera ball distance in pixels. Guess, only used if the program uses the camera ball.
 int camPixels(float d) { return constrain((int)lroundf(35.0f + d * 0.5f), 35, 150); }
 
@@ -310,7 +321,7 @@ void sendSense() {
   float d = dist(ball.x, ball.y);
   bool found = ball.visible && d < IR_RANGE;
   uint16_t ang = found ? (uint16_t)wrap360(lroundf(robotAngle(ball.x, ball.y) + randf(IR_NOISE_DEG))) : 0xFFFF;
-  uint16_t str = found ? irStrength(d) : 0;
+  uint16_t str = found ? irShadow(irStrength(d), robotAngle(ball.x, ball.y)) : 0;
   uint8_t p[SENSE_LEN] = {SENSE_HDR};
   for (int i = 0; i < 4; i++) p[1 + i] = (lineState >> (8 * i)) & 0xFF;
   p[5] = found;
