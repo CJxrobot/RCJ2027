@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <core_act.h>
 
+// Motor direction of this robot body: 1 = attack body (wired the other way), 0 = defense body
+#define MOTOR_REVERSE 0
+
 // T12c (Act): defense robot as a state machine -- act_defense_smach2 with F_out as the stop point
 // Same as act_defense_smach2.cpp, except DEFEND stays on the penalty line with F_out (8.0 cm
 // ahead of the centre) instead of the ring ch 4 (6.1 cm): the robot stands ~1.9 cm deeper.
@@ -605,6 +608,7 @@ __attribute__((unused)) static MergedBall merge_ball_data(const FieldData& field
 }
 
 void setup() {
+  set_motor_reverse(MOTOR_REVERSE);   // before anything moves a motor
   core_act_init();
   camera_begin();
   kicker_begin();

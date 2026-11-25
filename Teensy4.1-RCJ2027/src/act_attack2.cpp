@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <core_act.h>
 
+// Motor direction of this robot body: 1 = attack body (wired the other way), 0 = defense body
+#define MOTOR_REVERSE 1
+
 // T11b (Act): attack robot -- act_attack + IR orbit + line slow-down
 // (act_attack.cpp is not changed)
 // Hardware: mux 1 ring only (Sense USE_MUX2 0), IR, camera, 4 ultrasonic, kicker.
@@ -277,6 +280,7 @@ static void drawWaiting() {
 }
 
 void setup() {
+  set_motor_reverse(MOTOR_REVERSE);   // before anything moves a motor
   core_act_init();
   camera_begin();
   kicker_begin();

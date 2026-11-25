@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <core_act.h>
 
+// Motor direction of this robot body: 1 = attack body (wired the other way), 0 = defense body
+#define MOTOR_REVERSE 1
+
 // T11 (Act): attack game program, same order as the system design
 //
 //   update_gyro / read camera / read sense / kicker_update
@@ -64,6 +67,7 @@ __attribute__((unused)) static MergedBall merge_ball_data(const FieldData& field
 }
 
 void setup() {
+  set_motor_reverse(MOTOR_REVERSE);   // before anything moves a motor
   core_act_init();
   camera_begin();
   kicker_begin();

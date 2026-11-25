@@ -134,6 +134,10 @@ void drawMessage(const char* msg) {
 }
 
 // ===== Motors =====
+static bool motorReverse = false;            // set by each act program (MOTOR_REVERSE)
+void set_motor_reverse(bool reverse) { motorReverse = reverse; }
+bool motor_reverse() { return motorReverse; }
+
 void SetMotorSpeed(uint8_t port, float speed){
   if (port < 1 || port > MOTOR_COUNT) return;
   uint8_t i = port - 1;
@@ -143,8 +147,9 @@ void SetMotorSpeed(uint8_t port, float speed){
     analogWrite(motorPwmPins[i], 0);
     return;
   }
-  //digitalWrite(motorDirPins[i], speed > 0 ? LOW : HIGH);
-  digitalWrite(motorDirPins[i], speed < 0 ? LOW : HIGH);
+  // defense body: speed > 0 -> HIGH; attack body (reverse): speed > 0 -> LOW
+  bool high = motorReverse ? speed < 0 : speed > 0;
+  digitalWrite(motorDirPins[i], high ? HIGH : LOW);
   analogWrite(motorPwmPins[i], (int)(fabsf(speed) * 255.0f / 100.0f));
 }
 

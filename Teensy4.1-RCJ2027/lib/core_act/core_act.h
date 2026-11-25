@@ -69,6 +69,12 @@ bool read_line_state(uint32_t& state);  // true if a valid packet arrived, keeps
 float line_angle(uint32_t state, float fallback = -1); // deg 0-360 of the line, -1 if none
 
 // --- Motors ---
+// Motor direction differs between the two robot bodies. Each act program has
+//   #define MOTOR_REVERSE 0 / 1   and calls set_motor_reverse(MOTOR_REVERSE) first in setup().
+// false (default): speed > 0 -> DIR HIGH (defense body). true: speed > 0 -> DIR LOW (attack body).
+// Programs that never call it (test_*, act, act_defense) keep the default.
+void set_motor_reverse(bool reverse);
+bool motor_reverse();
 void SetMotorSpeed(uint8_t port, float speed);   // port 1-4, speed -100..100
 void MotorStop();
 
