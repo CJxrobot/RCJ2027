@@ -105,6 +105,7 @@ struct Scenario {
   int usDead = 0;                               // ultrasonic that read nothing: bit 0 front, 1 right, 2 back, 3 left
   float shoveFrom = -1, shoveTo = -1, shoveVx = 0, shoveVy = 0;   // opponent pushes (cm/s, world) in this time
   float camScale = 1.0f;                        // back goal distance x this (camera error: < 1 reads short)
+  uint32_t lineStuck = 0;                       // line sensor bits that always read "line" (broken)
 };
 
 std::vector<Scenario> scenarios = {
@@ -183,6 +184,10 @@ std::vector<Scenario> scenarios = {
    0, -30, 90, 8, {{0, 0, -100, true}}},
   {"atk_ball_along_line", "Ball rolls along the right side line: robot follows along the line",
    40, 0, 90, 6, {{0, 70, -40, true}, {4.0f, 70, 60, true}}},
+  {"atk_ch7_stuck", "Ring ch 7 (157.5 deg) broken, always 'line' (Sense not masked): chase + kick-off must still work",
+   0, -30, 90, 6, {{0, 0, 0, true}}, -1, -1, -1, 0, 0, 0, -1, -1, 0, 0, 1.0f, 0x0080},
+  {"atk_ch7_stuck_behind", "Same, ball behind",
+   0, 0, 90, 8, {{0, 0, -25, true}}, -1, -1, -1, 0, 0, 0, -1, -1, 0, 0, 1.0f, 0x0080},
   {"atk_no_ball", "No ball: library goes home (toward our goal)",
    30, 40, 90, 5, {}},
   {"atk_kickoff_us_front_dead", "Kick-off, front ultrasonic broken: x 0.7 forward unless the ball is there",
@@ -314,6 +319,7 @@ void sendSense() {
     toWorld(s.deg, s.r, x, y);
     if (lineDist(x, y) <= LINE_SEEN_CM) lineState &= ~(1UL << s.bit);
   }
+  lineState &= ~sc->lineStuck;                     // broken sensors (no Sense mask in the sim)
   bool line = lineState != 0xFFFFFFFF;
   sim_set_pin(PIN_0, line);                        // interrupt first, like sense.cpp
   sim_set_pin(PIN_1, line);
