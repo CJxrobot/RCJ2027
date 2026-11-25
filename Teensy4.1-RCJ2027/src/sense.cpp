@@ -16,6 +16,12 @@
 // Mux 2 channels with no sensor, and the outer side sensors that are read but never reported
 #define M2_UNUSED (0x1740UL << 16) // mux 2 channel 6, 8, 9, 10, 12 have no sensor
 #define M2_IGNORE (0x8024UL << 16) // R_out 15, B_out 5, L_out 2
+// Broken mux 1 ring channels (bit ch = ring channel ch, angle ch x 22.5): never "line".
+// Emergency use: a channel that reads wrong (always line / never line) is masked here.
+// Per robot (the two Sense boards share this file): ATK used with USE_MUX2 0, DEF with 1.
+#define M1_IGNORE_ATK 0x0080UL       // attack robot: ch 7 (157.5 deg) broken (2026-11-25)
+#define M1_IGNORE_DEF 0x0000UL       // defense robot: none
+#define M1_IGNORE (USE_MUX2 ? M1_IGNORE_DEF : M1_IGNORE_ATK)
 
 // Mux 2 sensor names for the debug print, same as line_sensing.cpp
 struct M2Sensor { const char* name; uint8_t ch; };
@@ -60,7 +66,7 @@ void setup() {
   core_sense_init();
   analogWriteFrequency(LS_BRIGHTNESS, 20000);
   analogWrite(LS_BRIGHTNESS, 105);   // same as line_sensing.cpp calibration (0-255)
-  line_sensor_config(USE_MUX2, ~(M2_UNUSED | M2_IGNORE));
+  line_sensor_config(USE_MUX2, ~(M2_UNUSED | M2_IGNORE | M1_IGNORE));
   us_begin();
 }
 
