@@ -782,6 +782,7 @@ int main(int argc, char** argv) {
   if (live) { ball.x = 0; ball.y = -30; ball.visible = true; }
   sim_set_pin(BALL_POSESSION, HIGH);              // no ball
   sim_set_pin(START_BUTTON, LOW);                 // START already pressed
+  sim_set_pin(26, HIGH);                          // SW2 (act_attack3 data button) not pressed
   scriptBall(0);
 
   setup();

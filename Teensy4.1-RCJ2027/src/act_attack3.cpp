@@ -42,14 +42,16 @@
 // Ultrasonic field (2026-11-26: at high speed the front sensors run over the line):
 //   per sensor (front / right / back / left), the part of the move toward it x
 //     (1 - exp(-(line - US_LINE_STOP3) / US_LAMBDA3)) ... 0 at the stop
-//   line = reading - US_WALL_TO_LINE3 (wall to white line) - last loop's speed x US_LAG3
-//          (the reading is ~0.3 s old: at 60 % that is ~54 cm)
-//   front sensor, ball in front of it (or held): readings under US_BALL_CM3 are the ball, ignored
+//   line = reading - US_WALL_TO_LINE3 (wall to white line) - last loop's speed x US_LAG3,
+//          that correction at most US_LAG_MAX3 (the reading is ~0.3 s old)
+//   front sensor: not used while the ball is in front of it (within US_BALL_DEG3) or held, the
+//          robot must reach / push the ball (2026-11-26: front brake too early, robot did not go)
 //   failed (switched off / 0 / no packet US_STALE3_MS) -> x US_FAIL3 toward that side
 //   Applied before the white line (the line sensors have the last word).
 //
 // Serial every 200 ms: mode | ball angle / strength | hold | v
 
+#define DATA_BUTTON    26     // SW2 (netlist U1.18 = pin 26), pressed = LOW: stop + show the data
 #define PUSH_DEG3      5.0f   // ball this close to 90: push (library PUSH_DEG 10 is kept for defense)
 #define PUSH_SPEED3    60.0f  // ball in front: forward ...
 #define PUSH_SLOW3     40.0f  // ... but this for the first PUSH_SLOW_MS
@@ -91,8 +93,8 @@ static const float WHEEL_BONUS[4] = {2.0f, 2.0f, 2.0f, 2.0f};   // 45, 135, 225,
 #define US_LINE_STOP3  3.0f   // sensor (robot edge) this far before the line: no speed toward it
 #define US_LAMBDA3     10.0f  // exponential: 13 cm before the stop -> 27 % left ... 0 at it
 #define US_LAG3        0.30f  // reading age (s)
+#define US_LAG_MAX3    20.0f  // the lag correction at most this (cm)
 #define US_CMS_PCT3    3.0f   // 100 % = 300 cm/s
-#define US_BALL_CM3    12.0f  // front sensor, ball in front: readings under this are the ball
 #define US_BALL_DEG3   30.0f  // "ball in front of the front sensor": within this of 90
 
 enum Mode3 : uint8_t { M3_NONE, M3_SHOT, M3_PUSH, M3_CHASE, M3_ORBIT };
@@ -134,7 +136,10 @@ static float usCm3(int i) {
   return senseUs.cm[i];
 }
 
+static float usCut3[4] = {0, 0, 0, 0};   // last cut per sensor (0 = none, 1 = all), for the screen
+
 static void usField(Vec2& v, const Vec2& last) {
+  for (int i = 0; i < 4; i++) usCut3[i] = 0;
   if (!US_FIELD3) return;
   bool ballFront = has_ball() ||
                    (ir_ball_fresh(IR_TIMEOUT_MS) && fabsf(wrap180(irBall.angle - 90.0f)) < US_BALL_DEG3);
@@ -142,15 +147,17 @@ static void usField(Vec2& v, const Vec2& last) {
     float ux = cosf(usDir3[i] * DEG_TO_RAD), uy = sinf(usDir3[i] * DEG_TO_RAD);
     float into = v.x * ux + v.y * uy;
     if (into <= 0) continue;                                     // away / along: keep
+    if (i == US_N_FRONT && ballFront) continue;                  // pushing / reaching the ball
     float d = usCm3(i);
-    if (d > 0 && i == US_N_FRONT && ballFront && d < US_BALL_CM3) continue;   // that is the ball
     float k;
     if (d <= 0) k = 1.0f - US_FAIL3;
     else {
       float moving = max(0.0f, last.x * ux + last.y * uy);       // % toward it last loop
-      float line = d - US_WALL_TO_LINE3 - moving * US_CMS_PCT3 * US_LAG3;
+      float lag = min((float)US_LAG_MAX3, moving * US_CMS_PCT3 * US_LAG3);
+      float line = d - US_WALL_TO_LINE3 - lag;
       k = min(1.0f, expf(-(line - US_LINE_STOP3) / US_LAMBDA3));
     }
+    usCut3[i] = k;
     v.x -= k * into * ux;
     v.y -= k * into * uy;
   }
@@ -206,9 +213,56 @@ static void lineGuard(Vec2& v) {
   if (lineOn) { v.x -= LINE_ESCAPE3 * ux; v.y -= LINE_ESCAPE3 * uy; }   // on it: away
 }
 
+// SW2 while running: motors stop, the screen shows the moment of the press (mode, v, cuts) and
+// the live sensors. SW2 again (or START): go on.
+static bool sw2Pressed() {
+  static bool prev = HIGH;
+  static uint32_t t = 0;
+  bool now = digitalRead(DATA_BUTTON);
+  bool press = prev == HIGH && now == LOW && millis() - t > 200;
+  if (press) t = millis();
+  prev = now;
+  return press;
+}
+
+static void dataScreen(const char* modeAt, Vec2 vAt, const float cutAt[4]) {
+  MotorStop();
+  uint32_t lastDraw = 0;
+  while (true) {
+    update_gyro_sensor();
+    read_camera();
+    read_sense();
+    lineData.state |= LINE_IGNORE3;
+    kicker_update();
+    if (sw2Pressed() || digitalRead(START_BUTTON) == LOW) break;
+    if (millis() - lastDraw < 100) continue;
+    lastDraw = millis();
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.printf("PAUSE %s v%.0f,%.0f\n", modeAt, vAt.x, vAt.y);
+    display.printf("cut F%.1f R%.1f B%.1f L%.1f\n", cutAt[0], cutAt[1], cutAt[2], cutAt[3]);
+    display.print("US");
+    for (int i = 0; i < 4; i++) {
+      float d = usCm3(i);
+      if (d > 0) display.printf(" %.0f", d);
+      else       display.print(" --");
+    }
+    display.println();
+    display.printf("Ball %s %.0f s%u\n", irBall.found ? "Y" : "-", irBall.angle, irBall.strength);
+    display.printf("Line %04lX %s\n", lineData.state & 0xFFFF, lineLock ? "LOCK" : "");
+    display.printf("Head %.1f Hold %d\n", current_heading(), has_ball());
+    display.println("SW2/START: go on");
+    display.display();
+  }
+  while (digitalRead(START_BUTTON) == LOW || digitalRead(DATA_BUTTON) == LOW) {}   // release
+  sw2Pressed();
+}
+
 void setup() {
   set_motor_reverse(MOTOR_REVERSE);   // before anything moves a motor
   core_act_init();
+  pinMode(DATA_BUTTON, INPUT_PULLUP);
   detachInterrupt(digitalPinToInterrupt(PIN_0));   // Sense line pins: not maskable here (see top)
   detachInterrupt(digitalPinToInterrupt(PIN_1));
   camera_begin();
@@ -287,13 +341,19 @@ void loop() {
   else Vector_Motion(v.x, v.y, 0);
   lastV = (mode == M3_NONE && !lineOn) ? Vec2() : v;
 
+  if (sw2Pressed()) {                // SW2: stop and show the data (see dataScreen)
+    float cutAt[4] = {usCut3[US_N_FRONT], usCut3[US_N_RIGHT], usCut3[US_N_BACK], usCut3[US_N_LEFT]};
+    dataScreen(modeName3[mode], v, cutAt);
+    lastV = Vec2();
+  }
+
   EVERY_MS(tp, 200) {
     Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | line %04lX %s %5.1f | "
-                  "us F %3.0f R %3.0f B %3.0f L %3.0f | v (%4.0f, %4.0f)\n",
+                  "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | v (%4.0f, %4.0f)\n",
                   modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
                   strUsed, orbitG, has_ball(), lineData.state & 0xFFFF,
                   lineOn ? "ON  " : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
                   usCm3(US_N_FRONT), usCm3(US_N_RIGHT), usCm3(US_N_BACK), usCm3(US_N_LEFT),
-                  v.x, v.y);                                    // strength raw > compensated
+                  usCut3[US_N_FRONT], v.x, v.y);                                    // strength raw > compensated
   }
 }
