@@ -19,8 +19,10 @@
 //                    past the middle of the line the sensors see it on the other side, that
 //                    one is ignored (dir stays). Move: the part of the wanted move toward dir is
 //                    0 (brake, no ramp), moves along the line go on, + LINE_ESCAPE3 away from dir
-//     line gone   -> still locked: no move toward dir (no escape); unlocked when the wanted move
-//                    is not toward dir any more (ball still out there: waits at the line)
+//     line gone   -> unlocked at once (no memory). The old "stay locked until the wanted move is
+//                    not toward the line" kept LOCK with line FFFF anywhere on the field and
+//                    blocked every move in that direction (2026-11-26): removed. Before the
+//                    line the ultrasonic field slows the robot down.
 //     direction not known yet -> stop
 //
 // Orbit (exponential in the IR strength, the closer the ball the wider around it):
@@ -203,14 +205,14 @@ static void lineGuard(Vec2& v) {
     if (!lineLock) { lineLock = true; lineInitField = d; lineDirField = d; }
     else if (fabsf(wrap180(d - lineInitField)) <= LINE_SIDE_DEG) lineDirField = d;
   }
-  if (lineOn && !lineLock) { v = Vec2(); return; }      // direction not known yet: stop
-  if (!lineLock) return;
+  if (!lineOn) { lineLock = false; return; }            // line gone: unlocked (no memory)
+  if (!lineLock) { v = Vec2(); return; }                // direction not known yet: stop
   float dir = lineDirField - turn;                      // robot frame now
   float ux = cosf(dir * DEG_TO_RAD), uy = sinf(dir * DEG_TO_RAD);
   float in = toward(v, dir);
-  if (!lineOn && in <= 0) { lineLock = false; return; } // wants to go inside: unlock
   if (in > 0) { v.x -= in * ux; v.y -= in * uy; }       // brake toward the line, along it goes on
-  if (lineOn) { v.x -= LINE_ESCAPE3 * ux; v.y -= LINE_ESCAPE3 * uy; }   // on it: away
+  v.x -= LINE_ESCAPE3 * ux;                             // on it: away
+  v.y -= LINE_ESCAPE3 * uy;
 }
 
 // SW2 while running: motors stop, the screen shows the moment of the press (mode, v, cuts) and
