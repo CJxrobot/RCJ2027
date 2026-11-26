@@ -19,10 +19,14 @@
 //                    past the middle of the line the sensors see it on the other side, that
 //                    one is ignored (dir stays). Move: the part of the wanted move toward dir is
 //                    0 (brake, no ramp), moves along the line go on, + LINE_ESCAPE3 away from dir
-//     line gone   -> unlocked at once (no memory). The old "stay locked until the wanted move is
-//                    not toward the line" kept LOCK with line FFFF anywhere on the field and
-//                    blocked every move in that direction (2026-11-26): removed. Before the
-//                    line the ultrasonic field slows the robot down.
+//     line gone   -> normally unlocked at once (no memory). The old "stay locked until the wanted
+//                    move is not toward the line" kept LOCK with line FFFF anywhere on the field
+//                    and blocked every move in that direction (2026-11-26): removed.
+//                    CROSSED: the last sensor that saw the line was on the far side (raw direction
+//                    more than LINE_SIDE_DEG from init) -> the robot went all the way over it at
+//                    speed (2026-11-26: pushed on into the opponent area) -> stay locked and keep
+//                    going back (away from init) until the line is seen again and left on the
+//                    right side.
 //     direction not known yet -> stop
 //
 // Orbit (exponential in the IR strength, the closer the ball the wider around it):
@@ -61,6 +65,7 @@
 //     move toward the goal x (1 - exp(-(area dist - THEIR_STOP_CM) / THEIR_LAMBDA)), 0 when the
 //     robot centre is THEIR_STOP_CM outside the area line (robot partly inside, never fully:
 //     2026-11-26 the push went on into the area). Sideways along the area goes on.
+//     Centre already THEIR_OUT_CM inside (carried over at speed): straight out, THEIR_OUT_SPEED.
 //   the white line escape is never slowed
 //
 // Serial every 200 ms: mode | ball angle / strength | hold | v
@@ -101,6 +106,8 @@ static const float WHEEL_BONUS[4] = {3.0f, 3.0f, 2.0f, 2.0f};   // 45, 135, 225,
 #define FRONT_LAMBDA   30.0f  //   (85 cm -> 0.93, 55 -> 0.82, 40 -> 0.70, 25 -> 0.5)
 #define THEIR_STOP_CM  2.0f   // robot centre this far outside their area line: no move toward the goal
 #define THEIR_LAMBDA   12.0f  //   exponential: 14 cm before the stop -> 31 % left
+#define THEIR_OUT_CM   -3.0f  // centre this far inside their area line (camera) -> straight out ...
+#define THEIR_OUT_SPEED 40.0f //   ... at this speed (fully inside at about -10)
 #define PA_FRONT_CM3   30.0f  // area shape from the camera goal point (as the defense)
 #define PA_HALF_CM3    39.0f
 #define PA_R_CM3       15.0f
@@ -128,6 +135,8 @@ enum Mode3 : uint8_t { M3_NONE, M3_SHOT, M3_PUSH, M3_CHASE, M3_ORBIT };
 static bool lineLock = false;          // white line: direction locked
 static float lineDirField = 0;         // line direction, field frame (robot frame + heading - 90)
 static float lineInitField = 0;        // direction at the first touch, field frame
+static float lineRawField = 0;         // direction the sensors saw last, field frame
+static bool lineCrossed = false;       // went all the way over the line (see the top)
 static bool lineOn = false;            // a sensor sees the line now (for the print)
 static const char* modeName3[] = {"NOBALL", "SHOT", "PUSH", "CHASE", "ORBIT"};
 static Mode3 mode = M3_NONE;
@@ -168,6 +177,7 @@ static float toward(const Vec2& v, float dir);
 // Speed factor near the goals (see the top), 1 = no change
 static float goalK3 = 1.0f;            // last factor (for the print / screen)
 static float theirArea3 = 999;         // robot centre outside their area line (cm, camera)
+static bool theirInside3 = false;      // centre inside their area: going straight out
 static float goalSlow(Vec2& v) {
   goalK3 = 1.0f;
   if (!camera_fresh(CAM_TIMEOUT_MS)) return 1.0f;
@@ -187,6 +197,7 @@ static float goalSlow(Vec2& v) {
 
   // Opponent penalty area: no move toward the goal once the centre reaches its line
   theirArea3 = 999;
+  theirInside3 = false;
   if (f.seen && f.dist != PKT_NONE) {
     float turn = current_heading() - 90.0f;
     float fa = (f.angle + turn) * DEG_TO_RAD;                   // field frame
@@ -199,6 +210,12 @@ static float goalSlow(Vec2& v) {
       float k = min(1.0f, expf(-(theirArea3 - THEIR_STOP_CM) / THEIR_LAMBDA));
       v.x -= k * in * cosf(f.angle * DEG_TO_RAD);
       v.y -= k * in * sinf(f.angle * DEG_TO_RAD);
+    }
+    // centre inside their area (carried over the line at speed): straight out, away from the goal
+    theirInside3 = theirArea3 < THEIR_OUT_CM;
+    if (theirInside3) {
+      v.x = -THEIR_OUT_SPEED * cosf(f.angle * DEG_TO_RAD);
+      v.y = -THEIR_OUT_SPEED * sinf(f.angle * DEG_TO_RAD);
     }
   }
   return goalK3;
@@ -270,8 +287,17 @@ static void lineGuard(Vec2& v) {
     float d = lineDir + turn;
     if (!lineLock) { lineLock = true; lineInitField = d; lineDirField = d; }
     else if (fabsf(wrap180(d - lineInitField)) <= LINE_SIDE_DEG) lineDirField = d;
+    lineCrossed = false;
   }
-  if (!lineOn) { lineLock = false; return; }            // line gone: unlocked (no memory)
+  if (lineOn) {                                         // raw side, no fallback (cancel -> keep)
+    float r = line_angle(ring, -1.0f);
+    if (r >= 0) lineRawField = r + turn;
+  }
+  if (!lineOn) {
+    // line gone: unlocked, unless the far side saw it last (went over it) -> keep going back
+    if (lineLock && fabsf(wrap180(lineRawField - lineInitField)) > LINE_SIDE_DEG) lineCrossed = true;
+    if (!lineCrossed) { lineLock = false; return; }
+  }
   if (!lineLock) { v = Vec2(); return; }                // direction not known yet: stop
   float dir = lineDirField - turn;                      // robot frame now
   float ux = cosf(dir * DEG_TO_RAD), uy = sinf(dir * DEG_TO_RAD);
@@ -411,9 +437,9 @@ void loop() {
   lineGuard(v);                      // white line: last word
   set_ramp(!lineLock);               // locked: the brake works at once
 
-  if (mode == M3_NONE && !lineOn) MotorStop();
+  if (mode == M3_NONE && !lineLock && !theirInside3) MotorStop();
   else Vector_Motion(v.x, v.y, 0);
-  lastV = (mode == M3_NONE && !lineOn) ? Vec2() : v;
+  lastV = (mode == M3_NONE && !lineLock && !theirInside3) ? Vec2() : v;
 
   if (sw2Pressed()) {                // SW2: stop and show the data (see dataScreen)
     float cutAt[4] = {usCut3[US_N_FRONT], usCut3[US_N_RIGHT], usCut3[US_N_BACK], usCut3[US_N_LEFT]};
@@ -426,7 +452,7 @@ void loop() {
                   "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | goal k %.2f area %4.0f | v (%4.0f, %4.0f)\n",
                   modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
                   strUsed, orbitG, has_ball(), lineData.state & 0xFFFF,
-                  lineOn ? "ON  " : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
+                  lineOn ? "ON  " : lineCrossed ? "OVER" : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
                   usCm3(US_N_FRONT), usCm3(US_N_RIGHT), usCm3(US_N_BACK), usCm3(US_N_LEFT),
                   usCut3[US_N_FRONT], goalK3, theirArea3, v.x, v.y);                                    // strength raw > compensated
   }
