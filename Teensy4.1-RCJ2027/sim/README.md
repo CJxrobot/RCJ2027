@@ -71,7 +71,7 @@ chmod +x run.sh      # 只要第一次
 
 程式名稱就是 `src/` 裡的檔名（不含 `.cpp`）：
 `act_defense_smach`、`act_defense_smach2`、`act_attack`、`act_attack2`。
-名字含 `defense` 的會開 mux 2 線感測器，其他只有 mux 1。
+名字含 `defense` 的和 `act_attack4` 會開 mux 2 線感測器，其他只有 mux 1。
 
 ### 看結果
 - 跑全部情境：`out/<程式>_all.html` 是總表（每個情境的進球 / 違規 / 踢球，紅字 = 違規或烏龍球），點名字打開那個情境。Windows 會自動打開它。

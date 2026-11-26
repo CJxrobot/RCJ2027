@@ -11,6 +11,7 @@ PROG=${1:-act_defense_smach}
 SCEN=${2:-all}
 MUX2=0
 [[ $PROG == *defense* ]] && MUX2=1            # defense robot: mux 2 line sensors
+[[ $PROG == act_attack4* ]] && MUX2=1         # attack robot with mux 2 (act_attack4)
 
 command -v g++ >/dev/null || { echo "g++ not found: see README.md (Setup)"; exit 1; }
 EXTRA=""
