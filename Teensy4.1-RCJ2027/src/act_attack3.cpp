@@ -80,6 +80,7 @@ static const float WHEEL_BONUS[4] = {2.0f, 2.0f, 2.0f, 2.0f};   // 45, 135, 225,
 #define BACK_BONUS     2.0f   // strength lost at 270 (estimate, measure)
 
 // ----- Ultrasonic field -----
+#define US_FIELD3      1      // 0 = no ultrasonic slow-down at all (readings still shown / printed)
 #define US_USE_FRONT3  1      // H1, 90   (0 = broken: never used, counts as failed)
 #define US_USE_RIGHT3  1      // H2, 0
 #define US_USE_BACK3   1      // H3, 270
@@ -134,6 +135,7 @@ static float usCm3(int i) {
 }
 
 static void usField(Vec2& v, const Vec2& last) {
+  if (!US_FIELD3) return;
   bool ballFront = has_ball() ||
                    (ir_ball_fresh(IR_TIMEOUT_MS) && fabsf(wrap180(irBall.angle - 90.0f)) < US_BALL_DEG3);
   for (int i = 0; i < 4; i++) {
@@ -235,6 +237,13 @@ void setup() {
       display.printf("Hold %d  Kick %s\n", has_ball(), kicker_state_name());
       display.printf("Line %04lX mask %04lX\n", lineData.state & 0xFFFF, LINE_IGNORE3);
       display.printf("Sense pin %d (raw)\n", line_flag());
+      display.print("US");                                  // F R B L cm, -- = failed
+      for (int i = 0; i < 4; i++) {
+        float d = usCm3(i);
+        if (d > 0) display.printf(" %.0f", d);
+        else       display.print(" --");
+      }
+      display.printf(US_FIELD3 ? "\n" : " OFF\n");
       display.display();
     }
   }
