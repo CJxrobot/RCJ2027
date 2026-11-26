@@ -36,6 +36,17 @@
 // above is compensated: + WHEEL_BONUS[i] at the wheel angle, falling linearly to 0 at
 // WHEEL_ZONE_DEG from it. MEASURE: ball 20 cm away at 90 and at 45 / 135 / 225 / 315, read s on
 // the OLED / Serial: bonus = s(90) - s(wheel angle).
+// Around 270 (behind) the same: + BACK_BONUS at 270, 0 at BACK_ZONE_DEG from it (2026-11-26).
+// MEASURE: ball 20 cm away at 90 and at 270: BACK_BONUS = s(90) - s(270).
+//
+// Ultrasonic field (2026-11-26: at high speed the front sensors run over the line):
+//   per sensor (front / right / back / left), the part of the move toward it x
+//     (1 - exp(-(line - US_LINE_STOP3) / US_LAMBDA3)) ... 0 at the stop
+//   line = reading - US_WALL_TO_LINE3 (wall to white line) - last loop's speed x US_LAG3
+//          (the reading is ~0.3 s old: at 60 % that is ~54 cm)
+//   front sensor, ball in front of it (or held): readings under US_BALL_CM3 are the ball, ignored
+//   failed (switched off / 0 / no packet US_STALE3_MS) -> x US_FAIL3 toward that side
+//   Applied before the white line (the line sensors have the last word).
 //
 // Serial every 200 ms: mode | ball angle / strength | hold | v
 
@@ -65,6 +76,23 @@
 #define ORBIT_MIN_BACK_DEG 60.0f // near ball, back half (> 90 off the front): at least this
 #define WHEEL_ZONE_DEG 20.0f  // wheel shadow: compensation from the wheel angle out to this
 static const float WHEEL_BONUS[4] = {2.0f, 2.0f, 2.0f, 2.0f};   // 45, 135, 225, 315 (estimate, measure)
+#define BACK_ZONE_DEG  30.0f  // behind: compensation from 270 out to this
+#define BACK_BONUS     2.0f   // strength lost at 270 (estimate, measure)
+
+// ----- Ultrasonic field -----
+#define US_USE_FRONT3  1      // H1, 90   (0 = broken: never used, counts as failed)
+#define US_USE_RIGHT3  1      // H2, 0
+#define US_USE_BACK3   1      // H3, 270
+#define US_USE_LEFT3   1      // H4, 180
+#define US_STALE3_MS   200    // no AB packet for this long = every sensor failed
+#define US_FAIL3       0.7f   // failed sensor: speed toward its side x this
+#define US_WALL_TO_LINE3 13.0f // wall to the white line centre
+#define US_LINE_STOP3  3.0f   // sensor (robot edge) this far before the line: no speed toward it
+#define US_LAMBDA3     10.0f  // exponential: 13 cm before the stop -> 27 % left ... 0 at it
+#define US_LAG3        0.30f  // reading age (s)
+#define US_CMS_PCT3    3.0f   // 100 % = 300 cm/s
+#define US_BALL_CM3    12.0f  // front sensor, ball in front: readings under this are the ball
+#define US_BALL_DEG3   30.0f  // "ball in front of the front sensor": within this of 90
 
 enum Mode3 : uint8_t { M3_NONE, M3_SHOT, M3_PUSH, M3_CHASE, M3_ORBIT };
 static bool lineLock = false;          // white line: direction locked
@@ -89,9 +117,42 @@ static float strengthComp(float angle, float str) {
     float d = fabsf(wrap180(angle - (45.0f + 90.0f * i)));
     if (d < WHEEL_ZONE_DEG) bonus = max(bonus, WHEEL_BONUS[i] * (1.0f - d / WHEEL_ZONE_DEG));
   }
+  float db = fabsf(wrap180(angle - 270.0f));
+  if (db < BACK_ZONE_DEG) bonus = max(bonus, BACK_BONUS * (1.0f - db / BACK_ZONE_DEG));
   return str + bonus;
 }
 static float strUsed = 0;              // last compensated strength (for the print)
+
+// ----- Ultrasonic field -----
+static const bool usUse3[4] = {US_USE_FRONT3, US_USE_RIGHT3, US_USE_BACK3, US_USE_LEFT3};
+static const float usDir3[4] = {90.0f, 0.0f, 270.0f, 180.0f};   // front, right, back, left
+
+// cm, or 0 = failed (switched off, no reading, or no packet for US_STALE3_MS)
+static float usCm3(int i) {
+  if (!usUse3[i] || senseUs.t_ms == 0 || millis() - senseUs.t_ms > US_STALE3_MS) return 0;
+  return senseUs.cm[i];
+}
+
+static void usField(Vec2& v, const Vec2& last) {
+  bool ballFront = has_ball() ||
+                   (ir_ball_fresh(IR_TIMEOUT_MS) && fabsf(wrap180(irBall.angle - 90.0f)) < US_BALL_DEG3);
+  for (int i = 0; i < 4; i++) {
+    float ux = cosf(usDir3[i] * DEG_TO_RAD), uy = sinf(usDir3[i] * DEG_TO_RAD);
+    float into = v.x * ux + v.y * uy;
+    if (into <= 0) continue;                                     // away / along: keep
+    float d = usCm3(i);
+    if (d > 0 && i == US_N_FRONT && ballFront && d < US_BALL_CM3) continue;   // that is the ball
+    float k;
+    if (d <= 0) k = 1.0f - US_FAIL3;
+    else {
+      float moving = max(0.0f, last.x * ux + last.y * uy);       // % toward it last loop
+      float line = d - US_WALL_TO_LINE3 - moving * US_CMS_PCT3 * US_LAG3;
+      k = min(1.0f, expf(-(line - US_LINE_STOP3) / US_LAMBDA3));
+    }
+    v.x -= k * into * ux;
+    v.y -= k * into * uy;
+  }
+}
 
 static Vec2 chase3() {
   Vec2 v;
@@ -208,17 +269,22 @@ void loop() {
     v = chase3();
   }
 
-  lineGuard(v);
+  static Vec2 lastV;                 // speed sent last loop (ultrasonic lag)
+  usField(v, lastV);                 // walls (ultrasonic), exponential
+  lineGuard(v);                      // white line: last word
   set_ramp(!lineLock);               // locked: the brake works at once
 
   if (mode == M3_NONE && !lineOn) MotorStop();
   else Vector_Motion(v.x, v.y, 0);
+  lastV = (mode == M3_NONE && !lineOn) ? Vec2() : v;
 
   EVERY_MS(tp, 200) {
-    Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | line %04lX %s %5.1f | v (%4.0f, %4.0f)\n",
+    Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | line %04lX %s %5.1f | "
+                  "us F %3.0f R %3.0f B %3.0f L %3.0f | v (%4.0f, %4.0f)\n",
                   modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
                   strUsed, orbitG, has_ball(), lineData.state & 0xFFFF,
                   lineOn ? "ON  " : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
+                  usCm3(US_N_FRONT), usCm3(US_N_RIGHT), usCm3(US_N_BACK), usCm3(US_N_LEFT),
                   v.x, v.y);                                    // strength raw > compensated
   }
 }
