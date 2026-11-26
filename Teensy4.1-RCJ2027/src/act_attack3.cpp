@@ -57,6 +57,10 @@
 //   own-goal risk: the ball between the robot and our goal (ball within OWN_RISK_DEG of the back
 //     goal direction) and the move goes toward our goal: whole speed x the same with
 //     OWN_MIN_K / OWN_LAMBDA (strong)
+//   opponent penalty area (camera front goal, same area shape as the defense): the part of the
+//     move toward the goal x (1 - exp(-(area dist - THEIR_STOP_CM) / THEIR_LAMBDA)), 0 when the
+//     robot centre is THEIR_STOP_CM outside the area line (robot partly inside, never fully:
+//     2026-11-26 the push went on into the area). Sideways along the area goes on.
 //   the white line escape is never slowed
 //
 // Serial every 200 ms: mode | ball angle / strength | hold | v
@@ -93,8 +97,13 @@ static const float WHEEL_BONUS[4] = {3.0f, 3.0f, 2.0f, 2.0f};   // 45, 135, 225,
 
 // ----- Goals (camera) -----
 #define GOAL_NEAR_CM   25.0f  // camera goal distance where the factor reaches its minimum
-#define FRONT_MIN_K    0.7f   // attacking straight: a bit slower near the opponent goal
-#define FRONT_LAMBDA   20.0f  //   (45 cm -> 0.89, 35 -> 0.83, 25 -> 0.7)
+#define FRONT_MIN_K    0.5f   // attacking straight: slower near the opponent goal
+#define FRONT_LAMBDA   30.0f  //   (85 cm -> 0.93, 55 -> 0.82, 40 -> 0.70, 25 -> 0.5)
+#define THEIR_STOP_CM  2.0f   // robot centre this far outside their area line: no move toward the goal
+#define THEIR_LAMBDA   12.0f  //   exponential: 14 cm before the stop -> 31 % left
+#define PA_FRONT_CM3   30.0f  // area shape from the camera goal point (as the defense)
+#define PA_HALF_CM3    39.0f
+#define PA_R_CM3       15.0f
 #define OWN_MIN_K      0.3f   // own-goal risk: much slower near our goal
 #define OWN_LAMBDA     30.0f  //   (85 cm -> 0.91, 55 -> 0.68, 40 -> 0.55, 25 -> 0.3)
 #define OWN_RISK_DEG   45.0f  // ball within this of our goal's direction = between robot and goal
@@ -158,6 +167,7 @@ static float toward(const Vec2& v, float dir);
 
 // Speed factor near the goals (see the top), 1 = no change
 static float goalK3 = 1.0f;            // last factor (for the print / screen)
+static float theirArea3 = 999;         // robot centre outside their area line (cm, camera)
 static float goalSlow(Vec2& v) {
   goalK3 = 1.0f;
   if (!camera_fresh(CAM_TIMEOUT_MS)) return 1.0f;
@@ -174,6 +184,23 @@ static float goalSlow(Vec2& v) {
   goalK3 = max(goalK3, min(FRONT_MIN_K, OWN_MIN_K));
   v.x *= goalK3;
   v.y *= goalK3;
+
+  // Opponent penalty area: no move toward the goal once the centre reaches its line
+  theirArea3 = 999;
+  if (f.seen && f.dist != PKT_NONE) {
+    float turn = current_heading() - 90.0f;
+    float fa = (f.angle + turn) * DEG_TO_RAD;                   // field frame
+    float x = -f.dist * cosf(fa), y = f.dist * sinf(fa);        // robot from the goal point, y > 0 = before it
+    float qx = fabsf(x), cx = PA_HALF_CM3 - PA_R_CM3, cy = PA_FRONT_CM3 - PA_R_CM3;
+    theirArea3 = (qx > cx && y > cy) ? hypotf(qx - cx, y - cy) - PA_R_CM3
+                                     : max(qx - PA_HALF_CM3, y - PA_FRONT_CM3);
+    float in = toward(v, f.angle);
+    if (in > 0) {
+      float k = min(1.0f, expf(-(theirArea3 - THEIR_STOP_CM) / THEIR_LAMBDA));
+      v.x -= k * in * cosf(f.angle * DEG_TO_RAD);
+      v.y -= k * in * sinf(f.angle * DEG_TO_RAD);
+    }
+  }
   return goalK3;
 }
 
@@ -292,7 +319,7 @@ static void dataScreen(const char* modeAt, Vec2 vAt, const float cutAt[4]) {
     display.println();
     display.printf("Ball %s %.0f s%u\n", irBall.found ? "Y" : "-", irBall.angle, irBall.strength);
     display.printf("Line %04lX %s\n", lineData.state & 0xFFFF, lineLock ? "LOCK" : "");
-    display.printf("Head %.1f Hold %d k%.2f\n", current_heading(), has_ball(), goalK3);
+    display.printf("Head %.0f Hold %d k%.2f A%.0f\n", current_heading(), has_ball(), goalK3, theirArea3);
     display.printf("Goal F%s%.0f/%u B%s%.0f/%u\n", fieldData.front_goal.seen ? "" : "-",
                    fieldData.front_goal.angle, fieldData.front_goal.dist,
                    fieldData.back_goal.seen ? "" : "-", fieldData.back_goal.angle, fieldData.back_goal.dist);
@@ -396,11 +423,11 @@ void loop() {
 
   EVERY_MS(tp, 200) {
     Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | line %04lX %s %5.1f | "
-                  "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | goal k %.2f | v (%4.0f, %4.0f)\n",
+                  "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | goal k %.2f area %4.0f | v (%4.0f, %4.0f)\n",
                   modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
                   strUsed, orbitG, has_ball(), lineData.state & 0xFFFF,
                   lineOn ? "ON  " : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
                   usCm3(US_N_FRONT), usCm3(US_N_RIGHT), usCm3(US_N_BACK), usCm3(US_N_LEFT),
-                  usCut3[US_N_FRONT], goalK3, v.x, v.y);                                    // strength raw > compensated
+                  usCut3[US_N_FRONT], goalK3, theirArea3, v.x, v.y);                                    // strength raw > compensated
   }
 }
