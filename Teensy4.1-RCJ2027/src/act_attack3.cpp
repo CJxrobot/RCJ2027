@@ -51,6 +51,14 @@
 //   failed (switched off / 0 / no packet US_STALE3_MS) -> x US_FAIL3 toward that side
 //   Applied before the white line (the line sensors have the last word).
 //
+// Goals (camera, 2026-11-26; no camera / goal not seen: nothing changes):
+//   toward the opponent goal (front goal, move with a part toward it): whole speed x
+//     FRONT_MIN_K + (1 - FRONT_MIN_K) x (1 - exp(-(dist - GOAL_NEAR_CM) / FRONT_LAMBDA))  (a bit)
+//   own-goal risk: the ball between the robot and our goal (ball within OWN_RISK_DEG of the back
+//     goal direction) and the move goes toward our goal: whole speed x the same with
+//     OWN_MIN_K / OWN_LAMBDA (strong)
+//   the white line escape is never slowed
+//
 // Serial every 200 ms: mode | ball angle / strength | hold | v
 
 #define DATA_BUTTON    26     // SW2 (netlist U1.18 = pin 26), pressed = LOW: stop + show the data
@@ -79,9 +87,17 @@
 #define ORBIT_MIN_DEG  35.0f  // near ball, front half: at least this (never straight at it)
 #define ORBIT_MIN_BACK_DEG 60.0f // near ball, back half (> 90 off the front): at least this
 #define WHEEL_ZONE_DEG 20.0f  // wheel shadow: compensation from the wheel angle out to this
-static const float WHEEL_BONUS[4] = {2.0f, 2.0f, 2.0f, 2.0f};   // 45, 135, 225, 315 (estimate, measure)
+static const float WHEEL_BONUS[4] = {3.0f, 3.0f, 2.0f, 2.0f};   // 45, 135, 225, 315 (estimate; 45 / 135 +1 2026-11-26)
 #define BACK_ZONE_DEG  30.0f  // behind: compensation from 270 out to this
 #define BACK_BONUS     2.0f   // strength lost at 270 (estimate, measure)
+
+// ----- Goals (camera) -----
+#define GOAL_NEAR_CM   25.0f  // camera goal distance where the factor reaches its minimum
+#define FRONT_MIN_K    0.7f   // attacking straight: a bit slower near the opponent goal
+#define FRONT_LAMBDA   20.0f  //   (45 cm -> 0.89, 35 -> 0.83, 25 -> 0.7)
+#define OWN_MIN_K      0.3f   // own-goal risk: much slower near our goal
+#define OWN_LAMBDA     30.0f  //   (85 cm -> 0.91, 55 -> 0.68, 40 -> 0.55, 25 -> 0.3)
+#define OWN_RISK_DEG   45.0f  // ball within this of our goal's direction = between robot and goal
 
 // ----- Ultrasonic field -----
 #define US_FIELD3      1      // 0 = no ultrasonic slow-down at all (readings still shown / printed)
@@ -136,6 +152,29 @@ static const float usDir3[4] = {90.0f, 0.0f, 270.0f, 180.0f};   // front, right,
 static float usCm3(int i) {
   if (!usUse3[i] || senseUs.t_ms == 0 || millis() - senseUs.t_ms > US_STALE3_MS) return 0;
   return senseUs.cm[i];
+}
+
+static float toward(const Vec2& v, float dir);
+
+// Speed factor near the goals (see the top), 1 = no change
+static float goalK3 = 1.0f;            // last factor (for the print / screen)
+static float goalSlow(Vec2& v) {
+  goalK3 = 1.0f;
+  if (!camera_fresh(CAM_TIMEOUT_MS)) return 1.0f;
+  const FieldObj& f = fieldData.front_goal;
+  const FieldObj& b = fieldData.back_goal;
+  if (f.seen && f.dist != PKT_NONE && toward(v, f.angle) > 0)
+    goalK3 = min(goalK3, FRONT_MIN_K + (1 - FRONT_MIN_K) *
+                         (1 - min(1.0f, expf(-(f.dist - GOAL_NEAR_CM) / FRONT_LAMBDA))));
+  bool risk = b.seen && b.dist != PKT_NONE && ir_ball_fresh(IR_TIMEOUT_MS) &&
+              fabsf(wrap180(irBall.angle - b.angle)) < OWN_RISK_DEG && toward(v, b.angle) > 0;
+  if (risk)
+    goalK3 = min(goalK3, OWN_MIN_K + (1 - OWN_MIN_K) *
+                         (1 - min(1.0f, expf(-(b.dist - GOAL_NEAR_CM) / OWN_LAMBDA))));
+  goalK3 = max(goalK3, min(FRONT_MIN_K, OWN_MIN_K));
+  v.x *= goalK3;
+  v.y *= goalK3;
+  return goalK3;
 }
 
 static float usCut3[4] = {0, 0, 0, 0};   // last cut per sensor (0 = none, 1 = all), for the screen
@@ -253,7 +292,10 @@ static void dataScreen(const char* modeAt, Vec2 vAt, const float cutAt[4]) {
     display.println();
     display.printf("Ball %s %.0f s%u\n", irBall.found ? "Y" : "-", irBall.angle, irBall.strength);
     display.printf("Line %04lX %s\n", lineData.state & 0xFFFF, lineLock ? "LOCK" : "");
-    display.printf("Head %.1f Hold %d\n", current_heading(), has_ball());
+    display.printf("Head %.1f Hold %d k%.2f\n", current_heading(), has_ball(), goalK3);
+    display.printf("Goal F%s%.0f/%u B%s%.0f/%u\n", fieldData.front_goal.seen ? "" : "-",
+                   fieldData.front_goal.angle, fieldData.front_goal.dist,
+                   fieldData.back_goal.seen ? "" : "-", fieldData.back_goal.angle, fieldData.back_goal.dist);
     display.println("SW2/START: go on");
     display.display();
   }
@@ -286,11 +328,13 @@ void setup() {
       display.clearDisplay();
       display.setTextSize(1);
       display.setCursor(0, 0);
-      display.println("ATTACK3 press START");
-      display.printf("Motor %s\n", MOTOR_REVERSE ? "REVERSE (atk)" : "normal (def)");
+      display.printf("ATTACK3 START mot %s\n", MOTOR_REVERSE ? "REV" : "nor");
       display.printf("Head %.1f\n", current_heading());
       display.printf("Ball %s %.0f s%u\n", irBall.found ? "Y" : "-", irBall.angle, irBall.strength);
       display.printf("Hold %d  Kick %s\n", has_ball(), kicker_state_name());
+      display.printf("Goal F%s%.0f/%u B%s%.0f/%u\n", fieldData.front_goal.seen ? "" : "-",
+                     fieldData.front_goal.angle, fieldData.front_goal.dist,
+                     fieldData.back_goal.seen ? "" : "-", fieldData.back_goal.angle, fieldData.back_goal.dist);
       display.printf("Line %04lX mask %04lX\n", lineData.state & 0xFFFF, LINE_IGNORE3);
       display.printf("Sense pin %d (raw)\n", line_flag());
       display.print("US");                                  // F R B L cm, -- = failed
@@ -335,6 +379,7 @@ void loop() {
   }
 
   static Vec2 lastV;                 // speed sent last loop (ultrasonic lag)
+  goalSlow(v);                       // near the goals (camera)
   usField(v, lastV);                 // walls (ultrasonic), exponential
   lineGuard(v);                      // white line: last word
   set_ramp(!lineLock);               // locked: the brake works at once
@@ -351,11 +396,11 @@ void loop() {
 
   EVERY_MS(tp, 200) {
     Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | line %04lX %s %5.1f | "
-                  "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | v (%4.0f, %4.0f)\n",
+                  "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | goal k %.2f | v (%4.0f, %4.0f)\n",
                   modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
                   strUsed, orbitG, has_ball(), lineData.state & 0xFFFF,
                   lineOn ? "ON  " : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
                   usCm3(US_N_FRONT), usCm3(US_N_RIGHT), usCm3(US_N_BACK), usCm3(US_N_LEFT),
-                  usCut3[US_N_FRONT], v.x, v.y);                                    // strength raw > compensated
+                  usCut3[US_N_FRONT], goalK3, v.x, v.y);                                    // strength raw > compensated
   }
 }
