@@ -16,6 +16,8 @@
 // Everything else (side arms, corner lock, ring guard, LEAVE, RETURN, ultrasonic) as smach2;
 // RETURN aims at the new stop point (STOP_CM 8), the back ultrasonic spot values are 2 cm less.
 // Camera depth floor only while no front sensor is on a line (the line sensors know better).
+// No front sensor on a line + back ultrasonic working: the ultrasonic decides the depth (spot
+// reading US_BACK_GOAL_CM / US_BACK_WALL_CM, slow), the camera only after it (2026-11-27).
 //
 // From act_defense_smach2: plus (DEFEND only, no memory): the WHOLE mux 1 ring (16 channels,
 // 6.1 cm, inside every arm sensor) must never go over a line. Any ring channel on a line, except
@@ -182,6 +184,10 @@
 // Back sensor at the defending spot (F_out on the penalty line), MEASURE with test_us / the OLED:
 #define US_BACK_GOAL_CM  12.0f // in front of our goal: sees the goal's back wall (estimate, smach2 14 - 2)
 #define US_BACK_WALL_CM  18.0f // beside the goal (end of the penalty line): sees the field wall (estimate, 20 - 2)
+#define US_POST_ZONE_CM  5.0f  // goal post zone: back target = the field wall one (safe side)
+#define US_DEPTH_DEEP_CM 0.5f  // no front sensor on a line: back reading this much under the spot = deep
+#define US_DEPTH_TOL_CM  1.5f  // ... this much over it = shallow (in between: stay)
+#define US_DEPTH_SPEED   10.0f // ... moving to it (slow: the reading is ~0.3 s old)
 #define US_BACK_MARGIN_CM 2.0f // lower limit = spot - this (fully inside the area ~4 cm deeper than the spot)
 #define US_BACK_KP       1.5f  // RETURN / LEAVE backward speed: % per cm above the lower limit
 #define GOAL_HALF_CM     30.0f // robot x within this (camera): back sensor sees the goal, else the field wall
@@ -292,6 +298,15 @@ static float usCm(int i) {
 static float usBackMin(const OurGoal& goal) {
   float gx = -goal.dist * cosf(goal.angle * DEG_TO_RAD);
   return (fabsf(gx) < GOAL_HALF_CM ? US_BACK_GOAL_CM : US_BACK_WALL_CM) - US_BACK_MARGIN_CM;
+}
+
+// Back reading at the stop point. Near the goal post (|x| within US_POST_ZONE_CM of the goal
+// half width) the camera x cannot tell goal back wall from field wall: take the LARGER one
+// (wrong = the robot stands a little shallow, never deeper).
+static float usBackSpot(const OurGoal& goal) {
+  float gx = fabsf(-goal.dist * cosf(goal.angle * DEG_TO_RAD));
+  if (gx < GOAL_HALF_CM - US_POST_ZONE_CM) return US_BACK_GOAL_CM;
+  return US_BACK_WALL_CM;
 }
 
 enum DefState : uint8_t { DEFEND, LEAVE, RETURN };
@@ -443,6 +458,19 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   }
   if (inner)                     v.y = -FINE_SPEED;  // too far forward: back a little
   else if (out)                  v.y = 0;            // right place: F_out alone on the line
+  else if (usBack > 0) {
+    // No front sensor on the line: the BACK ULTRASONIC decides the depth before the camera
+    // (2026-11-27: the robot went back, lost the line, the camera alone was wrong).
+    //   deeper than the spot  -> forward
+    //   shallower             -> back slowly, unless the line memory says the line is ahead
+    //                            (memory deep + ultrasonic shallow: forward, the safe side)
+    //   within the tolerance  -> stay
+    float spot = usBackSpot(goal);
+    bool memDeep = linePos == LP_AHEAD || linePos == LP_AT;
+    if (usBack < spot - US_DEPTH_DEEP_CM)      v.y = memDeep ? FINE_SPEED : US_DEPTH_SPEED;
+    else if (usBack > spot + US_DEPTH_TOL_CM)  v.y = memDeep ? US_DEPTH_SPEED : -US_DEPTH_SPEED;
+    else                                       v.y = 0;
+  }
   else if (linePos == LP_OVER)   v.y = -FINE_SPEED;  // passed over it: back a little
   else if (linePos == LP_AHEAD)  v.y = FINE_SPEED;   // a bit deep: forward a little
   else if (linePos == LP_AT)     v.y = FINE_SPEED;   // (memory: F_out had it, now gone -> deep)
