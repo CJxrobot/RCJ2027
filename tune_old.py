@@ -1,3 +1,5 @@
+# OLD VERSION (before 2026-11-27 camera brightness / exposure settings): kept as tune_old.py
+# The current one is tune.py.
 # ============================================================
 #  COLOR PICKER (omni mirror) — goal + ball — run from MaixVision
 # ============================================================

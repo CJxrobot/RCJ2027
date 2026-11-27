@@ -1,3 +1,5 @@
+# OLD VERSION (before 2026-11-27 camera brightness / exposure settings): kept as goal_ball_detection_old.py
+# The current one is goal_ball_detection.py.
 from maix import camera, image, app, time, uart, err, pinmap
 import math
 import threading
@@ -63,7 +65,7 @@ YELLOW_LAB = [30, 77, -16, 28, 29, 72]
 BLUE_LAB = [30, 53, -24, 23, -47, -10]
 
 # The goal we attack is the FRONT goal, the other one is the BACK goal (ATTACK_YELLOW in core_act.h)
-ATTACK_YELLOW = True
+ATTACK_YELLOW = False
 FRONT_LAB = YELLOW_LAB if ATTACK_YELLOW else BLUE_LAB
 BACK_LAB = BLUE_LAB if ATTACK_YELLOW else YELLOW_LAB
 
