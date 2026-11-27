@@ -17,6 +17,9 @@
 // drives forward, the recovery only past F_out.
 // Back ultrasonic: safety layer only again (as before 2026-11-27): with no front sensor on a line
 // it can only ADD forward (reading under the spot = deep), never stop or move the robot back.
+// Two parts of "ultrasonic first" kept (they only keep the robot from going back): DEFEND
+// "pushed out" needs the back reading to agree; RETURN backward never below the back limit
+// unless the camera says farther than US_RETURN_CAM_CM.
 // RETURN: top speed 55 (smach3 40), slow-down near the stop point unchanged (KP / KD).
 // Everything else as act_defense_smach3 (2026-11-27 morning version, before "ultrasonic first"):
 // side arms, corner lock, ring guard, LEAVE, RETURN, camera depth floor, pushed out.
@@ -188,6 +191,8 @@
 #define US_BACK_WALL_CM  21.5f // beside the goal (end of the penalty line): sees the field wall (estimate, smach3 18 + 3.5)
 #define US_POST_ZONE_CM  5.0f  // goal post zone: back target = the field wall one (safe side)
 #define US_DEPTH_DEEP_CM 0.5f  // no front sensor on a line: back reading this much under the spot = deep
+#define US_RETURN_CAM_CM 60.0f // RETURN: camera may let the robot back below the back ultrasonic limit only farther than this
+#define US_PUSHED_OUT_CM 15.0f // DEFEND "pushed out": back reading must be this much over the spot too
 #define US_DEPTH_SPEED   10.0f // ... then at least this forward (slow: the reading is ~0.3 s old)
 #define US_BACK_MARGIN_CM 2.0f // lower limit = spot - this (fully inside the area ~4 cm deeper than the spot)
 #define US_BACK_KP       1.5f  // RETURN / LEAVE backward speed: % per cm above the lower limit
@@ -707,9 +712,13 @@ void loop() {
     EVERY_MS(tu, 200) Serial.printf("%-6s (%s) | goal unknown: stopped\n", stateName[st], why);
     return;
   }
+  // Back ultrasonic working -> it must agree (reads US_PUSHED_OUT_CM over the spot); the camera
+  // alone reads too long at a slant (field 2026-11-27: goal 320 71 > 54 at the area -> RETURN loop)
+  float usB = usCm(US_N_BACK);
   if (st == DEFEND && goal.dist > PUSHED_OUT_CM &&
+      (usB <= 0 || usB > usBackSpot(goal) + US_PUSHED_OUT_CM) &&
       !seen(state, FRONT_ANY | rightSide.mid | rightSide.in | leftSide.mid | leftSide.in))
-    go(RETURN, "pushed out");
+    go(RETURN, usB > 0 ? "pushed out, back ultrasonic" : "pushed out");
 
   switch (st) {
     case DEFEND: {
@@ -841,7 +850,7 @@ void loop() {
       // ultrasonic: side walls, and backward slows down to 0 at the back lower limit
       // (never fully inside the area, rules 2.6 / 2.8)
       usGuard(v, (1 << US_N_RIGHT) | (1 << US_N_LEFT) | (1 << US_N_BACK), true, goal, ball,
-              areaDist(goal) > 0 ? (float)FINE_SPEED : 0.0f);
+              goal.dist > US_RETURN_CAM_CM ? (float)FINE_SPEED : 0.0f);   // smach3: areaDist > 0 (camera)
       break;
     }
   }
