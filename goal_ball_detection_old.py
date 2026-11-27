@@ -1,3 +1,5 @@
+# OLD VERSION (before 2026-11-27 camera brightness / exposure settings): kept as goal_ball_detection_old.py
+# The current one is goal_ball_detection.py.
 from maix import camera, image, app, time, uart, err, pinmap
 import math
 import threading

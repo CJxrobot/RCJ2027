@@ -12,6 +12,8 @@
 //   heading I term (core_act set_heading_i): error beyond HEAD_I_ZONE (3 deg) is integrated, so
 //     a steady turn while moving (field: moving left the head turns) is held within +- 3 deg.
 //     Reset on every state change and when picked up.
+//   Sense line pin interrupt off (see setup): flickering sensors at the area corner kept the
+//     LEAVE speed ramp at 0 (robot stuck at the corner when it should leave).
 //
 // From act_defense_smach4:
 // T12d (Act): defense robot as a state machine -- act_defense_smach3 with F_in as the stop point
@@ -670,6 +672,13 @@ __attribute__((unused)) static MergedBall merge_ball_data(const FieldData& field
 void setup() {
   set_motor_reverse(MOTOR_REVERSE);   // before anything moves a motor
   core_act_init();
+  // smach5 (field 2026-11-27: stuck at the area corner when LEAVE started): the Sense line pin
+  // interrupt (MotorStop on every rising edge) also resets the speed ramp. On the lines at the
+  // corner the sensors flicker at the line edge -> the ramp restarted from 0 again and again and
+  // LEAVE (ramp on) never got going. The line is handled every loop by this program instead (as
+  // act_attack3); line_flag() still reads the pins.
+  detachInterrupt(digitalPinToInterrupt(PIN_0));
+  detachInterrupt(digitalPinToInterrupt(PIN_1));
   camera_begin();
   kicker_begin();
   strategy_begin();
