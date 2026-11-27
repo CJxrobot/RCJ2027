@@ -187,6 +187,10 @@
 #define US_POST_ZONE_CM  5.0f  // goal post zone: back target = the field wall one (safe side)
 #define US_DEPTH_DEEP_CM 0.5f  // no front sensor on a line: back reading this much under the spot = deep
 #define US_DEPTH_TOL_CM  1.5f  // ... this much over it = shallow (in between: stay)
+#define US_RETURN_CAM_CM 60.0f // RETURN, back ultrasonic working: camera goal under this = near enough to trust
+                               // the ultrasonic (camera reads up to ~30 % long at a slant)
+#define US_AREA_X_MARGIN_CM 5.0f // ... and camera x within the area width + this
+#define US_PUSHED_OUT_CM 15.0f // back reading this much over the spot = really pushed out (camera alone is not enough)
 #define US_DEPTH_SPEED   10.0f // ... moving to it (slow: the reading is ~0.3 s old)
 #define US_BACK_MARGIN_CM 2.0f // lower limit = spot - this (fully inside the area ~4 cm deeper than the spot)
 #define US_BACK_KP       1.5f  // RETURN / LEAVE backward speed: % per cm above the lower limit
@@ -443,13 +447,19 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   bool outLost = defPrevOut && !out && !inner;
   defPrevOut = out;
   float usBack = usCm(US_N_BACK);
-  bool usDeep = usBack > 0 && usBack < usBackMin(goal) && areaDist(goal) < 0;   // camera: inside the line
+  // 2026-11-27: back ultrasonic before the camera. Working -> it alone says deep / not deep;
+  // failed -> the camera as before.
+  bool usDeep = usBack > 0 && usBack < usBackMin(goal);
   if (!recovering && !out && !inner && (outLost || usDeep)) {
     recovering = true;
     recoverStart = millis();
     Serial.printf("%lu ms: pushed back (%s): forward\n", millis(), usDeep ? "back ultrasonic" : "line");
   }
-  if (recovering && (out || inner || areaDist(goal) > 0)) recovering = false;
+  // Recovery end by the ultrasonic only once it reads SHALLOWER than the spot: moving forward,
+  // the ~0.3 s old reading is shorter than the truth, so this side is safe (at the spot it may
+  // still be deep).
+  bool notDeep = usBack > 0 ? usBack > usBackSpot(goal) + US_DEPTH_TOL_CM : areaDist(goal) > 0;
+  if (recovering && (out || inner || notDeep)) recovering = false;
   if (recovering) {
     linePos = LP_AHEAD;
     v.y = min(RECOVER_MAX, RECOVER_SPEED + (millis() - recoverStart) * RECOVER_RAMP);
@@ -558,7 +568,8 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   // sensor stops at F_out, and F_out losing the line sends the robot forward at once.
   float gx = -goal.dist * cosf(goal.angle * DEG_TO_RAD);     // robot x from the goal centre
   float gy = -goal.dist * sinf(goal.angle * DEG_TO_RAD);     // robot y from the goal line
-  if (!seen(state, FRONT_ANY) && gy < PA_FRONT_CM - DEPTH_FLOOR_CM) {
+  // 2026-11-27: only while the back ultrasonic failed (working: it decided the depth above).
+  if (usBack <= 0 && !seen(state, FRONT_ANY) && gy < PA_FRONT_CM - DEPTH_FLOOR_CM) {
     v.y = max(v.y, (float)SPEED);
     if ((gx > 0 && v.x < 0) || (gx < 0 && v.x > 0)) v.x = 0;
   }
@@ -715,9 +726,13 @@ void loop() {
     EVERY_MS(tu, 200) Serial.printf("%-6s (%s) | goal unknown: stopped\n", stateName[st], why);
     return;
   }
+  // 2026-11-27: back ultrasonic working -> it must agree (reads US_PUSHED_OUT_CM over the spot);
+  // the camera alone reads too long at a slant (field: goal 320 71 > 54 at the area -> RETURN loop)
+  float usB = usCm(US_N_BACK);
   if (st == DEFEND && goal.dist > PUSHED_OUT_CM &&
+      (usB <= 0 || usB > usBackSpot(goal) + US_PUSHED_OUT_CM) &&
       !seen(state, FRONT_ANY | rightSide.mid | rightSide.in | leftSide.mid | leftSide.in))
-    go(RETURN, "pushed out");
+    go(RETURN, usB > 0 ? "pushed out, back ultrasonic" : "pushed out");
 
   switch (st) {
     case DEFEND: {
@@ -812,7 +827,18 @@ void loop() {
       if (!headingOk()) break;
       // Camera: robot centre already inside the area (front sensors missed the line) -> DEFEND,
       // which moves forward. Opposite of the DEFEND check (areaDist > 0): no flipping.
-      if (areaDist(goal) < -3.0f && goal.dist <= DEFEND_MAX_CM) { go(DEFEND, "camera: inside the area"); break; }
+      // 2026-11-27: back ultrasonic working -> it decides (at the spot depth or deeper).
+      {
+        float ub = usCm(US_N_BACK);
+        // ultrasonic: also no back sensor on a line (opposite of the DEFEND -> RETURN check) and
+        // the camera x within the area width (beside the area the back sensor sees the wall)
+        float ugx = fabsf(goal.dist * cosf(goal.angle * DEG_TO_RAD));
+        if (ub > 0 ? goal.dist <= US_RETURN_CAM_CM && ub <= usBackSpot(goal) + US_DEPTH_TOL_CM &&
+                     ugx < PA_HALF_CM + US_AREA_X_MARGIN_CM && !seen(state, BACK)
+                   : goal.dist <= DEFEND_MAX_CM && areaDist(goal) < -3.0f) {
+          go(DEFEND, ub > 0 ? "back ultrasonic: at the line" : "camera: inside the area"); break;
+        }
+      }
 
       // Beside our goal (goal near 0 / 180): forward first, then to the goal.
       // Hysteresis: starts inside RETURN_SIDE_DEG, ends past RETURN_SIDE_DEG + RETURN_SIDE_HYST
@@ -849,7 +875,7 @@ void loop() {
       // ultrasonic: side walls, and backward slows down to 0 at the back lower limit
       // (never fully inside the area, rules 2.6 / 2.8)
       usGuard(v, (1 << US_N_RIGHT) | (1 << US_N_LEFT) | (1 << US_N_BACK), true, goal, ball,
-              areaDist(goal) > 0 ? (float)FINE_SPEED : 0.0f);
+              goal.dist > US_RETURN_CAM_CM ? (float)FINE_SPEED : 0.0f);   // 2026-11-27: was areaDist > 0
       break;
     }
   }

@@ -9,7 +9,7 @@ TARGET = "ball"        # "yellow", "blue" or "ball"
 #       goal -> 5 squares in a curve behind the robot
 #       ball -> 1 square on the right
 #  3. Read the terminal:   USE THIS: [L1, L2, A1, A2, B1, B2]
-#     Copy into main.py as YELLOW_LAB / BLUE_LAB / ORANGE_LAB.
+#     Copy into goal_ball_detection.py as YELLOW_LAB / BLUE_LAB / ORANGE_LAB.
 #
 #  BALL: 1 square. Put the ball on it.
 #        Change BALL_SPOT below to move it (0 = R_MIN, 1 = R_MAX).
@@ -46,10 +46,11 @@ MARGIN = 5            # extra room added to each side of the result
 from maix import camera, image, display, app, time
 import math
 
-CENTER_X = 170
-CENTER_Y = 125
+# same as goal_ball_detection.py (measured there with the Y flip only)
+CENTER_X = 175
+CENTER_Y = 116
 R_MIN = 35
-R_MAX = 104
+R_MAX = 100
 
 IS_BALL = TARGET == "ball"
 S = SETTINGS[TARGET]
@@ -86,25 +87,42 @@ cam = camera.Camera(320, 240, image.Format.FMT_RGB888)
 cam.set_awb(1)
 
 
-# ---- exposure (use the SAME values in main.py, color_picker.py, calibrate.py) ----
-AUTO_EXPOSURE = False   # False = fixed exposure, colours stay stable
-EXPOSURE_US = 0         # 0 = lock whatever auto exposure picked at start-up
-GAIN = 0                # 0 = lock whatever auto exposure picked at start-up
+# ---- camera image (use the SAME values in goal_ball_detection.py and tune.py) ----
+# Dark blue goal hard to see: raise LUMA first (55-70), then SATURATION (55-70).
+# Still too dark: EXPOSURE_SCALE 1.2-1.5 (longer exposure, more motion blur).
+# After ANY change here: re-pick ALL THREE colours with tune.py (the LAB numbers shift).
+LUMA = 60              # brightness 0-100 (camera default 50), -1 = leave as is
+CONTRAST = -1          # 0-100 (camera default 50), -1 = leave as is
+SATURATION = 60        # 0-100 (camera default 50): goals / ball colours stand out more
+AUTO_EXPOSURE = False  # False = fixed exposure, colours stay stable during the match
+EXPOSURE_US = 0        # 0 = lock what auto exposure picked at start-up (x EXPOSURE_SCALE)
+EXPOSURE_SCALE = 1.0   # > 1 = brighter (only when EXPOSURE_US = 0)
+GAIN = 0               # 0 = lock what auto exposure picked at start-up
 
 
-def setup_exposure(cam):
-    if AUTO_EXPOSURE:
-        return
-    for _ in range(30):          # let auto exposure settle first
-        cam.read()
-    exp = EXPOSURE_US if EXPOSURE_US > 0 else cam.exposure()
-    g = GAIN if GAIN > 0 else cam.gain()
-    cam.exposure(int(exp))       # setting exposure/gain switches to manual mode
-    cam.gain(int(g))
-    print("EXPOSURE LOCKED -> EXPOSURE_US = %d   GAIN = %d" % (exp, g))
+def setup_camera(cam):
+    # MaixPy spells contrast "constrast"
+    for name, val in (("luma", LUMA), ("constrast", CONTRAST), ("saturation", SATURATION)):
+        if val >= 0:
+            try:
+                getattr(cam, name)(int(val))
+            except Exception as e:
+                print("camera %s not set: %s" % (name, e))
+    if not AUTO_EXPOSURE:
+        for _ in range(30):          # let auto exposure settle first
+            cam.read()
+        exp = EXPOSURE_US if EXPOSURE_US > 0 else cam.exposure() * EXPOSURE_SCALE
+        g = GAIN if GAIN > 0 else cam.gain()
+        cam.exposure(int(exp))       # setting exposure / gain switches to manual mode
+        cam.gain(int(g))
+    try:
+        print("CAMERA: luma %d contrast %d saturation %d | exposure %s %d us gain %d" % (
+            cam.luma(), cam.constrast(), cam.saturation(),
+            "AUTO" if AUTO_EXPOSURE else "LOCKED", cam.exposure(), cam.gain()))
+    except Exception as e:
+        print("CAMERA settings:", e)
 
-
-setup_exposure(cam)
+setup_camera(cam)
 disp = display.Display()
 
 WHITE = image.Color.from_rgb(255, 255, 255)
@@ -216,8 +234,7 @@ while not app.need_exit():
     img = cam.read()
     if img is None:
         continue
-    img = img.flip(image.FlipDir.X)
-    img = img.flip(image.FlipDir.Y)
+    img = img.flip(image.FlipDir.Y)   # up-down flip only, same as goal_ball_detection.py
 
     now_th = None if TEST_LAB else measure(img)
     if now_th:

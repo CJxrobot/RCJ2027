@@ -55,6 +55,43 @@ BALL_UPDATE_EVERY = 1      # ball is searched every N frames (1 = every frame)
 cam = camera.Camera(320, 240, image.Format.FMT_RGB888)
 cam.set_awb(1)
 
+# ---- camera image (use the SAME values in goal_ball_detection.py and tune.py) ----
+# Dark blue goal hard to see: raise LUMA first (55-70), then SATURATION (55-70).
+# Still too dark: EXPOSURE_SCALE 1.2-1.5 (longer exposure, more motion blur).
+# After ANY change here: re-pick ALL THREE colours with tune.py (the LAB numbers shift).
+LUMA = 60              # brightness 0-100 (camera default 50), -1 = leave as is
+CONTRAST = -1          # 0-100 (camera default 50), -1 = leave as is
+SATURATION = 60        # 0-100 (camera default 50): goals / ball colours stand out more
+AUTO_EXPOSURE = False  # False = fixed exposure, colours stay stable during the match
+EXPOSURE_US = 0        # 0 = lock what auto exposure picked at start-up (x EXPOSURE_SCALE)
+EXPOSURE_SCALE = 1.0   # > 1 = brighter (only when EXPOSURE_US = 0)
+GAIN = 0               # 0 = lock what auto exposure picked at start-up
+
+
+def setup_camera(cam):
+    # MaixPy spells contrast "constrast"
+    for name, val in (("luma", LUMA), ("constrast", CONTRAST), ("saturation", SATURATION)):
+        if val >= 0:
+            try:
+                getattr(cam, name)(int(val))
+            except Exception as e:
+                print("camera %s not set: %s" % (name, e))
+    if not AUTO_EXPOSURE:
+        for _ in range(30):          # let auto exposure settle first
+            cam.read()
+        exp = EXPOSURE_US if EXPOSURE_US > 0 else cam.exposure() * EXPOSURE_SCALE
+        g = GAIN if GAIN > 0 else cam.gain()
+        cam.exposure(int(exp))       # setting exposure / gain switches to manual mode
+        cam.gain(int(g))
+    try:
+        print("CAMERA: luma %d contrast %d saturation %d | exposure %s %d us gain %d" % (
+            cam.luma(), cam.constrast(), cam.saturation(),
+            "AUTO" if AUTO_EXPOSURE else "LOCKED", cam.exposure(), cam.gain()))
+    except Exception as e:
+        print("CAMERA settings:", e)
+
+setup_camera(cam)
+
 if DEBUG_VIEW:
     from maix import display
     disp = display.Display()
@@ -63,7 +100,7 @@ YELLOW_LAB = [30, 77, -16, 28, 29, 72]
 BLUE_LAB = [30, 53, -24, 23, -47, -10]
 
 # The goal we attack is the FRONT goal, the other one is the BACK goal (ATTACK_YELLOW in core_act.h)
-ATTACK_YELLOW = True
+ATTACK_YELLOW = False
 FRONT_LAB = YELLOW_LAB if ATTACK_YELLOW else BLUE_LAB
 BACK_LAB = BLUE_LAB if ATTACK_YELLOW else YELLOW_LAB
 
