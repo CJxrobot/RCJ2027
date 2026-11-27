@@ -13,6 +13,10 @@
 //   white line in front (line direction within 90 +- LINE_FRONT_DEG5): escape LINE_ESCAPE_FRONT5
 //     instead of LINE_ESCAPE3 (comes back into the field harder).
 // Shooting (shoot_control) not changed.
+// Sense link (2026-11-27: line / ball data missing now and then): Serial8 receive buffer + 512
+//   bytes (default 64 = < 1 ms at 921600 baud if one loop runs long), and the 200 ms print ends
+//   with "link": packets in those 200 ms, checksum errors, junk bytes, longest gap between two
+//   packets (ms). Act treats > 50 ms without a packet as "no line / no ball" (IR_TIMEOUT_MS).
 //
 // From act_attack4 (= act_attack3 + mux 2 early brake):
 // Sense: sense_attack (mux 2 on). Mux 2 sensors sit outside the ring (6.1 cm) and touch a
@@ -413,9 +417,16 @@ static void dataScreen(const char* modeAt, Vec2 vAt, const float cutAt[4]) {
   sw2Pressed();
 }
 
+static uint8_t senseRxExtra[512];    // Serial8 receive buffer + this (see the top)
+static uint32_t linkGapMax = 0;      // ms, longest gap since the last print
+static uint32_t linkPk0 = 0, linkBad0 = 0, linkJunk0 = 0;   // counters at the last print
+
 void setup() {
   set_motor_reverse(MOTOR_REVERSE);   // before anything moves a motor
   core_act_init();
+#ifndef SIM_PROG
+  Serial8.addMemoryForRead(senseRxExtra, sizeof(senseRxExtra));
+#endif
   pinMode(DATA_BUTTON, INPUT_PULLUP);
   detachInterrupt(digitalPinToInterrupt(PIN_0));   // Sense line pins: not maskable here (see top)
   detachInterrupt(digitalPinToInterrupt(PIN_1));
@@ -464,7 +475,13 @@ void setup() {
 void loop() {
   update_gyro_sensor();
   read_camera();
-  read_sense();
+  uint8_t sGot = read_sense();
+  {                                  // link check: longest gap between two Sense packets
+    static uint32_t lastPkt = 0;
+    uint32_t nowMs = millis();
+    if (lastPkt) linkGapMax = max(linkGapMax, nowMs - lastPkt);
+    if (sGot & SENSE_GOT_PKT) lastPkt = nowMs;
+  }
   lineData.state |= LINE_IGNORE4;    // broken channels never "line"
   kicker_update();
 
@@ -507,11 +524,16 @@ void loop() {
 
   EVERY_MS(tp, 200) {
     Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | line %08lX arm %X %s %5.1f | "
-                  "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | goal k %.2f area %4.0f | v (%4.0f, %4.0f)\n",
+                  "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | goal k %.2f area %4.0f | v (%4.0f, %4.0f) | "
+                  "link %lu pk bad %lu junk %lu gap %lu ms\n",
                   modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
                   strUsed, orbitG, has_ball(), lineData.state, armSeen4,
                   lineOn ? "ON  " : lineCrossed ? "OVER" : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
                   usCm3(US_N_FRONT), usCm3(US_N_RIGHT), usCm3(US_N_BACK), usCm3(US_N_LEFT),
-                  usCut3[US_N_FRONT], goalK3, theirArea3, v.x, v.y);                                    // strength raw > compensated
+                  usCut3[US_N_FRONT], goalK3, theirArea3, v.x, v.y,
+                  (unsigned long)(senseLinkStats.pkts - linkPk0), (unsigned long)(senseLinkStats.bad - linkBad0),
+                  (unsigned long)(senseLinkStats.junk - linkJunk0), (unsigned long)linkGapMax);   // strength raw > compensated
+    linkPk0 = senseLinkStats.pkts; linkBad0 = senseLinkStats.bad; linkJunk0 = senseLinkStats.junk;
+    linkGapMax = 0;
   }
 }
