@@ -228,6 +228,8 @@
 #define RING_LEFT  ((1UL << 7) | (1UL << 8) | (1UL << 9))    // mux 1 ring, 157.5 .. 202.5 deg
 #define RING_FREE_FROM 2   // ring channels 2..6 (45 .. 135 deg) may sit on the penalty line ...
 #define RING_FREE_TO   6   // ... (ch 4 is the stop point), every other one is a guard
+#define RING_FREE_BITS 0x007CUL  // ring ch 2..6
+#define RING_EDGE_BITS ((1UL << 1) | (1UL << 7))   // ring ch 1 / 7: front line too while frontRide (smach5)
 
 struct Side { uint32_t mid, in; };
 static const Side rightSide = {M2(14), M2(13)};
@@ -493,7 +495,9 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   if (!anyFront && usBack > 0 && usBack < usBackSpot(goal) - US_DEPTH_DEEP_CM)
     v.y = max(v.y, US_DEPTH_SPEED);
   if (v.y != 0) defLastMove = v.y;
-  bool atSide = leftSeen || rightSeen || ringL || ringR;   // at a side line: never back (deeper)
+  // smach5: ch 1 / 7 on the front line (head turned, F_in / ring 2-6 on it too) is not a side line
+  uint32_t sideRing = seen(state, FRONT_IN | RING_FREE_BITS) ? ~RING_EDGE_BITS : 0xFFFFFFFFUL;
+  bool atSide = leftSeen || rightSeen || seen(state, RING_LEFT & sideRing) || seen(state, RING_RIGHT & sideRing);
   if (atSide && !cornerBack) v.y = max(v.y, 0.0f);
 
   // Sideways: stand on the line from the ball to our goal centre (covers both goal corners).
@@ -550,9 +554,15 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   // Whole-ring guard (last, innermost, no memory): sum the "away" directions of every guard
   // channel on a line; the robot moves at least BACK_SPEED that way, whatever the ball, the
   // camera or the corner lock want. Never backward (deeper into the area): y part >= 0.
+  // smach5 (field 2026-11-27, moving left was jerky / slid out at the corner): with F_in as the
+  // stop point the front line is only ~0.5 cm from ring ch 1 / 7 (22.5 / 157.5 deg); a 2-3 deg
+  // head turn put ch 7 on the FRONT line and this guard pushed the robot right (-40 <-> +15).
+  // ch 1 / 7 on a line while F_in or ring 2-6 sees one too = the same front line: not a guard.
+  bool frontRide = seen(state, FRONT_IN | RING_FREE_BITS);
   float ax = 0, ay = 0;
   for (int ch = 0; ch < 16; ch++) {
     if (ch >= RING_FREE_FROM && ch <= RING_FREE_TO) continue;
+    if (frontRide && (ch == RING_FREE_FROM - 1 || ch == RING_FREE_TO + 1)) continue;
     if (!seen(state, 1UL << ch)) continue;
     ax -= cosf(ch * 22.5f * DEG_TO_RAD);
     ay -= sinf(ch * 22.5f * DEG_TO_RAD);
