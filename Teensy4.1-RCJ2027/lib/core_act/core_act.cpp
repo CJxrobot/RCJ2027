@@ -186,12 +186,36 @@ void set_aim(bool aiming) { robot.aiming = aiming; }
 //   normal: P_factor + D_factor
 //   aiming: aim_P, no D, |omega| limited to aim_omega_max (0 = no limit)
 // D is reset when the mode changes or after a pause, so it never jumps.
+static float headingISum = 0;          // deg*s
+static uint32_t headingIUs = 0;
+void set_heading_i(float ki, float zone, float range, float max_out) {
+  robot.I_factor = ki; robot.i_zone = zone; robot.i_range = range; robot.i_max = max_out;
+  headingISum = 0;
+}
+void reset_heading_i() { headingISum = 0; }
+float heading_i_out() { return robot.I_factor * headingISum; }
+
+// I term (off while aiming or I_factor 0): integrate between i_zone and i_range
+static float headingI(float e) {
+  uint32_t now = micros();
+  float dt = (now - headingIUs) * 1e-6f;
+  headingIUs = now;
+  if (robot.I_factor <= 0 || robot.aiming) { headingISum = 0; return 0; }
+  if (dt > 0.1f) dt = 0;                                       // first call / long pause
+  float ae = fabsf(e);
+  if (ae > robot.i_zone && ae < robot.i_range) headingISum += e * dt;
+  float lim = robot.i_max / robot.I_factor;
+  headingISum = constrain(headingISum, -lim, lim);
+  return robot.I_factor * headingISum;
+}
+
 static float headingCorrection(float target_heading) {
   static float prevErr = 0;
   static uint32_t prevUs = 0;
   static bool first = true, prevAim = false;
 
   float e = wrap180(target_heading - currentHeading());
+  float iOut = headingI(e);
   uint32_t now = micros();
   float d = 0;
   if (first || robot.aiming != prevAim) {
@@ -214,14 +238,14 @@ static float headingCorrection(float target_heading) {
   if (fabsf(e) <= robot.heading_threshold) {
     prevErr = e;
     prevUs = now;
-    return 0.0f;
+    return iOut;                                     // 0 unless the I term is on
   }
   if (robot.aiming) {
     float w = robot.aim_P * e;
     if (robot.aim_omega_max > 0) w = constrain(w, -robot.aim_omega_max, robot.aim_omega_max);
     return w;
   }
-  return robot.P_factor * e + robot.D_factor * d;
+  return robot.P_factor * e + robot.D_factor * d + iOut;
 }
 
 void RobotIKControl(float vx, float vy, float omega) {

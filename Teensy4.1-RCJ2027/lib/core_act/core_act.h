@@ -51,6 +51,13 @@ struct RobotState {
     float accel_max = 0.0f;          // %/s while speeding up
     float decel_max = 0.0f;          // %/s while slowing down
     bool  ramp_on = false;           // false: output the target at once (line escape)
+    // Heading I term (2026-11-27, default off = every program as before; set_heading_i()).
+    // Error between i_zone and i_range deg: integrated; the I output is added always (also in
+    // the deadband), so a steady turn (one motor stronger) is held inside +- i_zone.
+    float I_factor = 0.0f;           // omega per deg*s (0 = off)
+    float i_zone = 3.0f;             // deg: integrate only beyond this ...
+    float i_range = 15.0f;           // ... and below this (big turns: P only, no wind-up)
+    float i_max = 15.0f;             // |I output| at most this (omega %)
 };
 
 extern GyroData gyroData;
@@ -85,6 +92,9 @@ void FC_Vector_Motion(float WVx, float WVy, float target_heading);
 void set_target_heading(float h);       // absolute target, limited to 90 +- robot.heading_limit
 void set_aim(bool aiming);
 void set_ramp(bool on);                 // speed ramp on / off (off for the line escape)
+void set_heading_i(float ki, float zone, float range, float max_out);   // heading I term (ki 0 = off)
+void reset_heading_i();                 // I sum to 0 (state change, picked up)
+float heading_i_out();                  // I output now (omega %, for the print)
 Vec2 motion_output();                   // speed actually sent last time (after the ramp)              // aiming: robot.aim_P, no D (see RobotState)
 float current_heading();                // gyro heading in the 90-forward convention
 float wrap180(float a);                 // wrap to (-180, 180]
