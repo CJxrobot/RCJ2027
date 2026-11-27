@@ -176,10 +176,21 @@ except Exception:
     pass
 settle(60)
 wb = None
+# Lock the white balance only with real gains. 2026-11-27 on the robot: while auto white balance
+# runs, set_wb_gain() reads back [0, 0, 0, 0]; setting that made the picture black. Then auto
+# white balance stays on (WB_DEFAULT = the MaixCAM default gains could be used instead).
+WB_DEFAULT = None            # e.g. [0.134, 0.0625, 0.0625, 0.1239] (MaixCAM default) to force it
 try:
-    wb = list(cam.set_wb_gain())          # current auto gains ...
-    cam.set_wb_gain(wb)                    # ... set = white balance locked
-    print("white balance locked:", [round(g, 4) for g in wb])
+    g = list(cam.set_wb_gain())
+    if WB_DEFAULT:
+        g = list(WB_DEFAULT)
+    if len(g) == 4 and all(x > 0.001 for x in g):
+        cam.set_wb_gain(g)
+        wb = g
+        print("white balance locked:", [round(x, 4) for x in g])
+    else:
+        print("white balance read back", g, "-> not usable, auto white balance stays on")
+        cam.set_awb(1)
 except Exception as e:
     print("white balance not locked (stays auto):", e)
 
@@ -193,6 +204,14 @@ for it in range(12):
     img = read()
     m = median_l(img)
     print("exposure %6d us  gain %5d  ->  ring median L %d (target %d)" % (exp, gain, m, TARGET_L))
+    if m <= 2:                             # black picture: something is wrong, do not chase it
+        print("picture black -> back to auto exposure, stop here (check the camera / lens cap)")
+        try:
+            cam.exp_mode(camera.AeMode.Auto)
+        except Exception:
+            pass
+        settle(30)
+        break
     if abs(m - TARGET_L) <= 3:
         break
     ratio = min(2.0, max(0.5, TARGET_L / max(m, 1)))
