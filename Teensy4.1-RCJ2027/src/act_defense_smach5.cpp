@@ -12,6 +12,9 @@
 //   heading I term (core_act set_heading_i): error beyond HEAD_I_ZONE (3 deg) is integrated, so
 //     a steady turn while moving (field: moving left the head turns) is held within +- 3 deg.
 //     Reset on every state change and when picked up.
+//   corner (14:20): camera goal >= 20 deg off 270 OR line sensors; sideways slow-down 45-75 deg,
+//     never below MIN_SPEED (the side arms stop it); back ultrasonic limit = spot (margin 0),
+//     at a corner always the goal value.
 //   Sense line pin interrupt off (see setup): flickering sensors at the area corner kept the
 //     LEAVE speed ramp at 0 (robot stuck at the corner when it should leave).
 //
@@ -94,8 +97,10 @@
 #define SPEED       30  // forward / backward on the penalty line
 #define BACK_SPEED  15  // backing off from a side line
 #define FINE_SPEED  15  // small forward / back correction around the F_out stop point
-#define DEF_SLOW_GOAL_DEG 35.0f // camera: back goal more than this off 270 -> sideways move away from it slows ...
-#define DEF_SIDE_GOAL_DEG 60.0f // ... down to 0 here (end of the penalty line)
+#define DEF_SLOW_GOAL_DEG 45.0f // camera: back goal more than this off 270 -> sideways move away from it slows ...
+#define DEF_SIDE_GOAL_DEG 75.0f // ... down to MIN_SPEED here (smach5: 35 / 60 -> 45 / 75, never to 0:
+                                // the side arms stop it at the side line, a wrong camera angle
+                                // stopped it before the corner and the corner never locked)
 #define LOCK_HEAD_DEG     10.0f // corner lock only facing 90 +- this (like the reference program)
 #define LOCK_PUSH_DEG     5.0f  // locked robot moved this much back toward our goal (camera angle) =
                                 // pushed in by an opponent -> unlock (field 2026-11-24: stuck inside)
@@ -121,9 +126,10 @@
 #define LEAVE_FRONT_DEG  5.0f  // ball within 90 +- this counts as "straight ahead" (85-95)
 #define LEAVE_HOLD_MS    3000  // ... for this long
 #define LEAVE_BREAK_MS   200   // ball out of the window shorter than this (noise): timer keeps running
-// Robot at a corner of the area: our goal more than DEF_CORNER_GOAL_DEG off 270. Ball on the
-// neutral spot seen at ~60 (right corner) / ~126 (left corner), field test 2026-11-24.
-#define DEF_CORNER_GOAL_DEG  25.0f
+// Robot at a corner of the area: our goal at least DEF_CORNER_GOAL_DEG off 270 (camera, smach5:
+// 25 -> 20 = 25 - 5 for the camera error) OR that side arm on a line / that corner locked (line
+// sensors). Ball on the neutral spot seen at ~60 (right corner) / ~126 (left corner), 2026-11-24.
+#define DEF_CORNER_GOAL_DEG  20.0f
 #define DEF_CORNER_R_MIN     0.0f  // right corner: ball between these angles ...
 #define DEF_CORNER_R_MAX     80.0f
 #define DEF_CORNER_L_MIN     100.0f // left corner
@@ -210,7 +216,7 @@
 #define US_RETURN_CAM_CM 60.0f // RETURN: camera may let the robot back below the back ultrasonic limit only farther than this
 #define US_PUSHED_OUT_CM 15.0f // DEFEND "pushed out": back reading must be this much over the spot too
 #define US_DEPTH_SPEED   10.0f // ... then at least this forward (slow: the reading is ~0.3 s old)
-#define US_BACK_MARGIN_CM 2.0f // lower limit = spot - this (fully inside the area ~4 cm deeper than the spot)
+#define US_BACK_MARGIN_CM 0.0f // lower limit = spot - this (smach5: 2 -> 0, the robot stays ~2 cm farther out)
 #define US_BACK_KP       1.5f  // RETURN / LEAVE backward speed: % per cm above the lower limit
 #define GOAL_HALF_CM     30.0f // robot x within this (camera): back sensor sees the goal, else the field wall
 #define US_BALL_SKIP_DEG 30.0f // ball close and within this of a sensor: it may be reading the ball, skip it
@@ -321,8 +327,15 @@ static float usCm(int i) {
 
 // Back sensor lower limit: what it reads at the defending spot minus a margin.
 // Robot in front of the goal (camera x): it sees the goal's back wall, else the field wall.
+// smach5: at a corner of the area (side arm on a line / corner locked) the robot centre is at
+// x ~29.5, right at the goal post: the back sensor may read the goal or the field wall and the
+// camera x flipped the limit by 6 cm there -> at a corner always the goal value (the smaller one:
+// the ultrasonic blocks / pushes less, the line sensors decide the depth). Set every loop.
+static bool usAtCorner = false;
+
 static float usBackMin(const OurGoal& goal) {
   float gx = -goal.dist * cosf(goal.angle * DEG_TO_RAD);
+  if (usAtCorner) return US_BACK_GOAL_CM - US_BACK_MARGIN_CM;
   return (fabsf(gx) < GOAL_HALF_CM ? US_BACK_GOAL_CM : US_BACK_WALL_CM) - US_BACK_MARGIN_CM;
 }
 
@@ -331,6 +344,7 @@ static float usBackMin(const OurGoal& goal) {
 // (wrong = the robot stands a little shallow, never deeper).
 static float usBackSpot(const OurGoal& goal) {
   float gx = fabsf(-goal.dist * cosf(goal.angle * DEG_TO_RAD));
+  if (usAtCorner) return US_BACK_GOAL_CM;                      // smach5: see usBackMin
   if (gx < GOAL_HALF_CM - US_POST_ZONE_CM) return US_BACK_GOAL_CM;
   return US_BACK_WALL_CM;
 }
@@ -538,7 +552,10 @@ static Vec2 defendMotion(uint32_t state, const MergedBall& ball, const OurGoal& 
   // safety move and is never slowed (field 2026-11-24: back-off 15 -> 9 %, robot stuck).
   float g = wrap180(goal.angle - 270.0f);            // robot right of the goal -> g < 0
   float k = constrain((DEF_SIDE_GOAL_DEG - fabsf(g)) / (DEF_SIDE_GOAL_DEG - DEF_SLOW_GOAL_DEG), 0.0f, 1.0f);
-  if ((g < 0 && v.x > 0) || (g > 0 && v.x < 0)) v.x *= k;
+  if ((g < 0 && v.x > 0) || (g > 0 && v.x < 0)) {
+    float ax0 = fabsf(v.x);                         // smach5: slower, but at least MIN_SPEED (not 0)
+    v.x = copysignf(max(ax0 * k, min(ax0, (float)MIN_SPEED)), v.x);
+  }
 
   float rightLim = sideLimit(rightSide, state), leftLim = sideLimit(leftSide, state);
   v.x = max(min(v.x, rightLim), -leftLim);           // side lines always win
@@ -731,6 +748,8 @@ void loop() {
   uint32_t now = millis();
   uint32_t state = line_flag() ? lineData.state : 0xFFFFFFFF;
   updateLinePos(state);                // every state: remember where the penalty line is
+  usAtCorner = st == DEFEND && (lockR || lockL ||
+               seen(state, rightSide.mid | rightSide.in | leftSide.mid | leftSide.in));
   MergedBall final_ball_data = ir_ball_data(irBall);
   //MergedBall final_ball_data = merge_ball_data(fieldData, irBall);
   MergedBall& ball = final_ball_data;
@@ -766,11 +785,15 @@ void loop() {
       // in that corner's window (4 s, rule 2.5: ball on the neutral spot next to the area)
       bool seenBall = ball.src != SRC_NONE;
       bool front = seenBall && fabsf(wrap180(ball.angle - 90.0f)) <= LEAVE_FRONT_DEG;
-      float g = wrap180(goal.angle - 270.0f);           // robot right of the goal -> g < 0
+      // smach5 (2026-11-27): at a corner = camera (goal >= DEF_CORNER_GOAL_DEG off 270) OR line
+      // sensors (that side arm sees a line / that corner is locked): one of them is enough
       float ba = fmodf(ball.angle + 360.0f, 360.0f);
+      float g = wrap180(goal.angle - 270.0f);           // robot right of the goal -> g < 0
+      bool atR = g <= -DEF_CORNER_GOAL_DEG || lockR || seen(state, rightSide.mid | rightSide.in);
+      bool atL = g >=  DEF_CORNER_GOAL_DEG || lockL || seen(state, leftSide.mid | leftSide.in);
       bool corner = seenBall &&
-                    ((g <= -DEF_CORNER_GOAL_DEG && ba >= DEF_CORNER_R_MIN && ba <= DEF_CORNER_R_MAX) ||
-                     (g >=  DEF_CORNER_GOAL_DEG && ba >= DEF_CORNER_L_MIN && ba <= DEF_CORNER_L_MAX));
+                    ((atR && ba >= DEF_CORNER_R_MIN && ba <= DEF_CORNER_R_MAX) ||
+                     (atL && ba >= DEF_CORNER_L_MIN && ba <= DEF_CORNER_L_MAX));
       if (front || corner) {
         bool kind = !front;                            // front has priority
         if (!frontTiming || kind != timingCorner) { frontTiming = true; frontStart = now; timingCorner = kind; }
