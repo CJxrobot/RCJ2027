@@ -107,8 +107,9 @@ def load_auto_config(cam):
     try:
         cam.saturation(int(c["saturation"]))
         cam.luma(int(c["luma"]))
-        if c.get("wb_gain"):
-            cam.set_wb_gain(c["wb_gain"])     # locked white balance
+        wb = c.get("wb_gain")
+        if wb and len(wb) == 4 and all(x > 0.001 for x in wb):
+            cam.set_wb_gain(wb)               # locked white balance (zeros = black picture: ignored)
         cam.exposure(int(c["exposure_us"]))   # manual exposure / gain
         cam.gain(int(c["gain"]))
     except Exception as e:
