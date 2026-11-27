@@ -58,7 +58,8 @@
 //           a FRONT sensor sees the line                                         -> DEFEND
 //
 // Every loop, before the states: our goal must be known (camera).
-//   unknown -> stop (LEAVE ends);  DEFEND farther than DEFEND_MAX_CM -> RETURN
+//   unknown -> stop (LEAVE ends);  DEFEND farther than PUSHED_OUT_CM with no front / side
+//   sensor on a line -> RETURN (back to DEFEND at DEFEND_MAX_CM)
 //
 // Ultrasonic (R03, from Sense in the AB packet): second safety layer, the camera decides first.
 //   LEAVE / RETURN: speed toward a side wall / backward falls to 0 near it
@@ -136,6 +137,10 @@
 #define DODGE_DEG        30.0f // ball within this of the goal direction: go around it
 #define DODGE_OFFSET_DEG 60.0f // ... by turning the path this much, on the field side (toward 90)
 #define DEFEND_MAX_CM    45.0f // DEFEND: our goal farther than this = pushed out of the area -> RETURN
+#define PUSHED_OUT_CM    50.0f // ... with no front / side sensor on a line (hysteresis: RETURN -> DEFEND
+                               // still at DEFEND_MAX_CM). A front sensor or a side arm on a line =
+                               // the robot is at the penalty line, never "pushed out" (2026-11-27:
+                               // left corner, goal 319, camera 58 > 44 cm, DEFEND <-> RETURN)
                                // (defending spots 16-33 cm, far corner of the area ~46 cm)
 // ----- Camera goal distance correction (measured on the field 2026-11-24) -----
 // The goal distance reads too long when the goal is seen at a slant. Multiply by K, linear
@@ -682,7 +687,9 @@ void loop() {
     EVERY_MS(tu, 200) Serial.printf("%-6s (%s) | goal unknown: stopped\n", stateName[st], why);
     return;
   }
-  if (st == DEFEND && goal.dist > DEFEND_MAX_CM) go(RETURN, "pushed out");
+  if (st == DEFEND && goal.dist > PUSHED_OUT_CM &&
+      !seen(state, FRONT_ANY | rightSide.mid | rightSide.in | leftSide.mid | leftSide.in))
+    go(RETURN, "pushed out");
 
   switch (st) {
     case DEFEND: {
