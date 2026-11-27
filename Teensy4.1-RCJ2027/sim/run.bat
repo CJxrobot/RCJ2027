@@ -19,7 +19,7 @@ if "%SCEN%"=="" set SCEN=all
 rem defense robot: mux 2 line sensors
 set MUX2=0
 echo %PROG% | findstr /i "defense" >nul && set MUX2=1
-echo %PROG% | findstr /i "act_attack4" >nul && set MUX2=1
+echo %PROG% | findstr /i "act_attack4 act_attack5" >nul && set MUX2=1
 
 rem g++ not on PATH (new install, old terminal): look in the usual install folders
 where g++ >nul 2>nul
