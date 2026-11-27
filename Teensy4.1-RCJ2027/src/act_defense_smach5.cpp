@@ -124,10 +124,10 @@
 // Robot at a corner of the area: our goal more than DEF_CORNER_GOAL_DEG off 270. Ball on the
 // neutral spot seen at ~60 (right corner) / ~126 (left corner), field test 2026-11-24.
 #define DEF_CORNER_GOAL_DEG  25.0f
-#define DEF_CORNER_R_MIN     40.0f // right corner: ball between these angles ...
+#define DEF_CORNER_R_MIN     0.0f  // right corner: ball between these angles ...
 #define DEF_CORNER_R_MAX     80.0f
 #define DEF_CORNER_L_MIN     100.0f // left corner
-#define DEF_CORNER_L_MAX     140.0f
+#define DEF_CORNER_L_MAX     180.0f // (smach5: 140 -> 180, 40 -> 0 above: ball beside the area counts too)
 #define DEF_CORNER_HOLD_MS   4000  // ... for this long -> LEAVE
 
 // ----- LEAVE -----
@@ -135,7 +135,7 @@
 #define ORBIT_SPEED      25.0f // LEAVE, out of the area: slow circle around the ball to get it to 90
 #define LEAVE_FAR_SPEED  60.0f // LEAVE speed limit with the ball far (IR closeness 0) ...
 #define LEAVE_NEAR_SPEED 30.0f // ... down to this with the ball close (closeness 1): no running over it
-#define LEAVE_MAX_MS     4000  // longest time out of the penalty area
+#define LEAVE_MAX_MS     1500  // longest time out of the penalty area (smach5: 4000 -> 1500)
 #define LEAVE_MAX_DIST_CM 90.0f // back goal farther than this: too far, return
 #define BALL_LOST_MS     200   // no ball for this long: return
 #define BEHIND_DEG       60.0f // ball within 270 +- this: behind the robot, return
@@ -824,6 +824,9 @@ void loop() {
 
       if (seen(state, BACK)) leaveBackSeen = true;               // back sensors on the line ...
       else if (leaveBackSeen) leaveOut = true;                   // ... and past it: fully out
+      // smach5: corner windows from 0 / to 180 (ball beside the area): still inside the area the
+      // chase can point backward (ball at 20 deg: v -39 back) -> never backward until out
+      if (!leaveOut && !shot.active) v.y = max(v.y, 0.0f);
       // Close to our goal after leaving: never drive back into the area (rules 2.6 / 2.8).
       // Block the move toward any arm that sees a line.
       if (leaveOut && goal.dist < PENALTY_ZONE_CM) {
