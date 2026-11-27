@@ -11,9 +11,9 @@
 #          exposure, then more gain)
 #       c. yellow goal, blue goal and the orange ball are found by themselves (largest
 #          yellow / blue / orange area in the ring) and their LAB ranges measured
-#  3. Result: saved to CONFIG_FILE and printed. goal_ball_detection.py loads that file at
+#  3. Result: saved to CONFIG_FILE and printed. goal_ball_detection_auto.py loads that file at
 #     start-up (camera settings + YELLOW_LAB / BLUE_LAB / ORANGE_LAB). Delete the file to go
-#     back to the values written in goal_ball_detection.py.
+#     back to the values written in that script. goal_ball_detection.py is not changed.
 #  Screen: purple = yellow found, cyan = blue found, orange = ball found.
 #  Nothing found for a colour -> its old value is kept (message in the terminal).
 # ============================================================
@@ -260,7 +260,7 @@ cfg = {"exposure_us": int(exp), "gain": int(gain), "wb_gain": wb, "saturation": 
 try:
     with open(CONFIG_FILE, "w") as fp:
         json.dump(cfg, fp)
-    print("SAVED", CONFIG_FILE, "-> goal_ball_detection.py uses it from the next start")
+    print("SAVED", CONFIG_FILE, "-> goal_ball_detection_auto.py uses it from the next start")
 except Exception as e:
     print("NOT SAVED (%s): copy the lines above into goal_ball_detection.py" % e)
 
