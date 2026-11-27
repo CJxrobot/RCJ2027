@@ -90,7 +90,34 @@ def setup_camera(cam):
     except Exception as e:
         print("CAMERA settings:", e)
 
-setup_camera(cam)
+# Saved by auto_camera.py (dark / bright field): camera settings + colour ranges.
+# The file wins over the values in this script; delete it to use the values here again.
+AUTO_CONFIG_FILE = "/root/camera_auto.json"
+
+
+def load_auto_config(cam):
+    try:
+        import json
+        with open(AUTO_CONFIG_FILE) as fp:
+            c = json.load(fp)
+    except Exception:
+        return None                      # no file: the settings in this script
+    try:
+        cam.saturation(int(c["saturation"]))
+        cam.luma(int(c["luma"]))
+        if c.get("wb_gain"):
+            cam.set_wb_gain(c["wb_gain"])     # locked white balance
+        cam.exposure(int(c["exposure_us"]))   # manual exposure / gain
+        cam.gain(int(c["gain"]))
+    except Exception as e:
+        print("auto config: camera settings not all applied:", e)
+    print("AUTO CONFIG loaded from", AUTO_CONFIG_FILE, c)
+    return c
+
+
+AUTO_CFG = load_auto_config(cam)
+if AUTO_CFG is None:
+    setup_camera(cam)
 
 if DEBUG_VIEW:
     from maix import display
@@ -98,6 +125,9 @@ if DEBUG_VIEW:
 
 YELLOW_LAB = [30, 77, -16, 28, 29, 72]
 BLUE_LAB = [30, 53, -24, 23, -47, -10]
+if AUTO_CFG:                             # auto_camera.py values win
+    YELLOW_LAB = AUTO_CFG.get("yellow", YELLOW_LAB)
+    BLUE_LAB = AUTO_CFG.get("blue", BLUE_LAB)
 
 # The goal we attack is the FRONT goal, the other one is the BACK goal (ATTACK_YELLOW in core_act.h)
 ATTACK_YELLOW = False
@@ -107,6 +137,8 @@ BACK_LAB = BLUE_LAB if ATTACK_YELLOW else YELLOW_LAB
 # Orange ball (tune in the MaixVision threshold tool)
 # keep A-min above the yellow goal's A-max (28) so the goal isn't read as the ball
 ORANGE_LAB = [44, 75, 6, 47, 10, 53]
+if AUTO_CFG:
+    ORANGE_LAB = AUTO_CFG.get("orange", ORANGE_LAB)
 # Image centre (robot centre) AFTER the flip below.
 # Only the Y (up-down) flip is applied now. The old values (175, 125) were measured with
 # both flips, so X is mirrored: 319 - 175 = 144, Y stays 125.
