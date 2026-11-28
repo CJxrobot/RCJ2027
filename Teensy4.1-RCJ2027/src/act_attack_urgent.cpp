@@ -25,6 +25,9 @@
 // Kicker: kicker_begin / kicker_update never called, charge + discharge pins held LOW.
 //   Ball held (USE_HOLD 1): push forward, aiming at the front goal (AIM_PUSH_SPEED, rotate()),
 //   goal not seen: straight NOGOAL_PUSH_SPEED, heading 90. No corner shot (it waits for a kick).
+//   Goal too far off the front (camera angle < AIM_LOCK_LOW or > AIM_LOCK_HIGH, back inside by
+//   AIM_LOCK_HYST): heading locked where it was, no turn (2026-11-28: turning near a corner, the
+//   line sensors missed the line). Goal lost while locked: heading 90 as normal.
 //   USE_HOLD 0: the ball sensor (pin 38) is not read, the robot just chases / pushes.
 // Sense: sense_attack (mux 2 on). The Sense line pins (PIN_0 / PIN_1) are detached.
 // Chase / orbit, goal slow-down, their area stop / out, own-goal risk, link print, SW2: attack5.
@@ -44,6 +47,9 @@
 #define ESC_BACK_CM    15.0f  // escape backup: that side's ultrasonic this much farther than at the touch = back
 #define ESC_GOAL_CM    70.0f  // escape backup (front / back): that goal this far (camera) = inside
 #define USE_HOLD       1      // 1 = ball sensor (pin 38) used (push the ball in), 0 = not read
+#define AIM_LOCK_LOW   30.0f  // pushing: camera goal angle under this ...
+#define AIM_LOCK_HIGH  150.0f //   ... or over this (incl. the back half): heading locked, no turn
+#define AIM_LOCK_HYST  5.0f   //   unlocked again only inside LOW + this .. HIGH - this
 
 // The 8 line sensors (mux 2 ch c = bit 16 + c). Everything else is masked: never "line".
 #define M2B(ch) (1UL << (16 + (ch)))
@@ -289,14 +295,30 @@ static void lineGuard(Vec2& v) {
   lineLock = escMask != 0;
 }
 
-// Ball held, no kicker: push it in, aiming at the front goal (rotate(): 90 if not seen)
+// Ball held, no kicker: push it in, aiming at the front goal (rotate()); goal not seen: heading 90.
+// Goal too far off the front: heading locked where it was (see the top).
+static bool aimLocked = false;         // for the print / screen
+static float aimLockHeading = 90;
 static bool pushShot(Vec2& v) {
-  if (!USE_HOLD || !has_ball()) return false;
+  if (!USE_HOLD || !has_ball()) { aimLocked = false; return false; }
   bool goal = camera_fresh(CAM_TIMEOUT_MS) && fieldData.front_goal.seen;
   v = Vec2();
   v.y = goal ? AIM_PUSH_SPEED : NOGOAL_PUSH_SPEED;
-  set_aim(goal);
-  set_target_heading(goal ? rotate(fieldData) : 90.0f);
+  if (!goal) {                                          // goal lost: as normal, heading 90
+    aimLocked = false;
+    set_aim(false);
+    set_target_heading(90.0f);
+    return true;
+  }
+  float a = fmodf(fieldData.front_goal.angle + 360.0f, 360.0f);
+  if (!aimLocked && (a < AIM_LOCK_LOW || a > AIM_LOCK_HIGH)) {
+    aimLocked = true;
+    aimLockHeading = current_heading();                 // stay where it is
+  } else if (aimLocked && a >= AIM_LOCK_LOW + AIM_LOCK_HYST && a <= AIM_LOCK_HIGH - AIM_LOCK_HYST) {
+    aimLocked = false;
+  }
+  set_aim(!aimLocked);
+  set_target_heading(aimLocked ? aimLockHeading : rotate(fieldData));
   return true;
 }
 
@@ -346,7 +368,7 @@ static void dataScreen(const char* modeAt, Vec2 vAt, const float cutAt[4]) {
     display.println();
     display.printf("Ball %s %.0f s%u\n", irBall.found ? "Y" : "-", irBall.angle, irBall.strength);
     display.printf("Line %08lX esc %X brk %X\n", lineData.state, escMask, brakeMask);
-    display.printf("Head %.0f Hold %d k%.2f A%.0f\n", current_heading(), has_ball(), goalK3, theirArea3);
+    display.printf("Head %.0f%s Hold %d k%.2f A%.0f\n", current_heading(), aimLocked ? "L" : "", has_ball(), goalK3, theirArea3);
     display.printf("Goal F%s%.0f/%u B%s%.0f/%u\n", fieldData.front_goal.seen ? "" : "-",
                    fieldData.front_goal.angle, fieldData.front_goal.dist,
                    fieldData.back_goal.seen ? "" : "-", fieldData.back_goal.angle, fieldData.back_goal.dist);
@@ -456,11 +478,11 @@ void loop() {
   }
 
   EVERY_MS(tp, 200) {
-    Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d | line %08lX esc %X brk %X | "
+    Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d%s | line %08lX esc %X brk %X | "
                   "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | goal k %.2f area %4.0f | v (%4.0f, %4.0f) | "
                   "link %lu pk bad %lu junk %lu gap %lu ms\n",
                   modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
-                  strUsed, orbitG, has_ball(), lineData.state, escMask, brakeMask,
+                  strUsed, orbitG, has_ball(), aimLocked ? " LOCK" : "", lineData.state, escMask, brakeMask,
                   usCm3(US_N_FRONT), usCm3(US_N_RIGHT), usCm3(US_N_BACK), usCm3(US_N_LEFT),
                   usCut3[US_N_FRONT], goalK3, theirArea3, v.x, v.y,
                   (unsigned long)(senseLinkStats.pkts - linkPk0), (unsigned long)(senseLinkStats.bad - linkBad0),
