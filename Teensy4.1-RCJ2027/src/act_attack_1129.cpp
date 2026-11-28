@@ -5,7 +5,8 @@
 #define MOTOR_REVERSE 1
 
 // T11g (Act): act_attack_1129 = act_attack5 + (2026-11-29, act_attack5 is not changed):
-//   1. No ball (IR): robot in the front half -> go to the field centre (0, MID_Y_OFFSET), heading
+//   1. No ball (IR) for NOBALL_WAIT_MS (stopped meanwhile; from START, any ball sighting restarts
+//      it): robot in the front half -> go to the field centre (0, MID_Y_OFFSET), heading
 //      90, P speed (MID_P, max MID_SPEED, stop within MID_TOL); back half -> stop. Ball seen on
 //      the way: chase at once (attack5).
 //      Position: x = (L - R) / 2, y = (B - F) / 2 from the ultrasonics when the pair is sane
@@ -135,6 +136,7 @@
 #define MID_SPEED     50.0f  // ... at most this fast
 #define MID_P         0.6f   // ... speed = this x distance (cm), up to MID_SPEED (sim: 2 overshot ~30 cm, US lag)
 #define MID_TOL       5.0f   // ... stop within this (cm)
+#define NOBALL_WAIT_MS 3000   // no ball this long (stopped) before going to the centre
 #define HALF_HYST      5.0f   // front half: y > this, back half: y < -this (between: as before)
 #define FIELD_LEN_CM   243.0f // wall to wall, front - back
 #define FIELD_WID_CM   182.0f // wall to wall, left - right
@@ -484,6 +486,7 @@ static void estimatePos() {
     else if (posY < -HALF_HYST) inFront = false;
   }
 }
+static uint32_t lastBallMs = 0;        // last IR ball sighting (or START)
 static Vec2 goHome() {                 // estimatePos() ran this loop
   if (!posYOk || !inFront) { mode = M3_NONE; return Vec2(); }      // back half / unknown: stop
   float ex = posXOk ? -posX : 0, ey = MID_Y_OFFSET - posY;           // field frame
@@ -574,6 +577,7 @@ static void dataScreen(const char* modeAt, Vec2 vAt, const float cutAt[4]) {
     display.printf("Line %08lX %s\n", lineData.state, lineLock ? "LOCK" : "");
     display.printf("Head %.0f%s Hold %d k%.2f A%.0f\n", current_heading(), aimLocked ? "L" : "", has_ball(), goalK3, theirArea3);
     display.printf("Pos %s%.0f,%s%.0f %s\n", posXOk ? "" : "?", posX, posYOk ? "" : "?", posY, inFront ? "FRONT" : "BACK");
+    display.printf("No ball %.1f s\n", (millis() - lastBallMs) / 1000.0f);
     display.printf("Goal F%s%.0f/%u B%s%.0f/%u\n", fieldData.front_goal.seen ? "" : "-",
                    fieldData.front_goal.angle, fieldData.front_goal.dist,
                    fieldData.back_goal.seen ? "" : "-", fieldData.back_goal.angle, fieldData.back_goal.dist);
@@ -635,6 +639,7 @@ void setup() {
     }
   }
   drawMessage("GO");
+  lastBallMs = millis();             // no-ball wait counts from START
   delay(200);
 }
 
@@ -665,7 +670,8 @@ void loop() {
     set_aim(false);
     set_target_heading(90);
     v = chase3();
-    if (mode == M3_NONE) v = goHome();   // no ball: front half -> centre, back half -> stop
+    if (mode != M3_NONE) lastBallMs = millis();
+    else if (millis() - lastBallMs >= NOBALL_WAIT_MS) v = goHome();   // no ball 3 s: front half -> centre
   }
 
   static Vec2 lastV;                 // speed sent last loop (ultrasonic lag)
@@ -692,7 +698,8 @@ void loop() {
                   "link %lu pk bad %lu junk %lu gap %lu ms\n",
                   slide4 ? "SLIDE" : modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
                   strUsed, orbitG, has_ball(), aimLocked ? " LOCK" : "", posXOk ? "" : "?", posX, posYOk ? "" : "?", posY,
-                  inFront ? "FRONT" : "BACK", lineData.state, armSeen4,
+                  mode == M3_NONE && millis() - lastBallMs < NOBALL_WAIT_MS ? "WAIT " : inFront ? "FRONT" : "BACK",
+                  lineData.state, armSeen4,
                   lineOn ? "ON  " : lineCrossed ? "OVER" : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
                   usCm3(US_N_FRONT), usCm3(US_N_RIGHT), usCm3(US_N_BACK), usCm3(US_N_LEFT),
                   usCut3[US_N_FRONT], goalK3, theirArea3, v.x, v.y,
