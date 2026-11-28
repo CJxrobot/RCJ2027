@@ -135,6 +135,9 @@
 #define AIM_LOCK_LOW   30.0f  //   goal angle under this ...
 #define AIM_LOCK_HIGH  150.0f //   ... or over this (incl. the back half): locked
 #define AIM_LOCK_HYST  5.0f   //   unlocked again only inside LOW + this .. HIGH - this
+#define ORBIT_SLIDE    30.0f  // orbit blocked by a mux 2 brake side: slide along that line toward the ball ...
+#define ORBIT_SLIDE_MIN 20.0f //   ... when the brake leaves less than this or it goes away from the ball
+                              //   (2026-11-29: stuck at our area line, ball right behind)
 #define LINE_IGNORE4   0x00000080UL  // 32 bit: ring ch 7 (157.5 deg) broken (2026-11-25); mux 2 ch c = bit 16 + c
 
 // Mux 2 early brake (same channels as the defense robot)
@@ -356,6 +359,32 @@ static void armBrake(Vec2& v) {
     float dir = 90.0f * i;
     float in = toward(v, dir);
     if (in > 0) { v.x -= in * cosf(dir * DEG_TO_RAD); v.y -= in * sinf(dir * DEG_TO_RAD); }
+  }
+}
+
+// Orbit blocked by a mux 2 brake side (the way round the ball is over that line, e.g. ball beside
+// our area line, behind): what the brake would leave is under ORBIT_SLIDE_MIN, or goes away from
+// the ball -> slide along that line toward the ball at ORBIT_SLIDE instead. Runs before goalSlow /
+// usField / armBrake (they still apply to the slide).
+static bool slide4 = false;            // for the print
+static void orbitSlide(Vec2& v) {
+  slide4 = false;
+  if (mode != M3_ORBIT || lineCrossed || theirInside3) return;
+  float a = irBall.angle * DEG_TO_RAD;
+  for (int i = 0; i < 4; i++) {
+    if ((lineData.state & ARM_MASK[i]) == ARM_MASK[i]) continue;   // that side sees no line
+    float ux = cosf(90.0f * i * DEG_TO_RAD), uy = sinf(90.0f * i * DEG_TO_RAD);
+    float in = v.x * ux + v.y * uy;
+    if (in <= 0) continue;                                         // not going toward it
+    float lx = v.x - in * ux, ly = v.y - in * uy;                  // what the brake would leave
+    bool awayFromBall = lx * cosf(a) + ly * sinf(a) < 0;
+    if (hypotf(lx, ly) >= ORBIT_SLIDE_MIN && !awayFromBall) continue;   // enough left, toward the ball
+    float tx = -uy, ty = ux;                                       // along the line ...
+    if (cosf(a) * tx + sinf(a) * ty < 0) { tx = -tx; ty = -ty; }   // ... toward the ball
+    v.x = tx * ORBIT_SLIDE;
+    v.y = ty * ORBIT_SLIDE;
+    slide4 = true;
+    return;
   }
 }
 
@@ -581,6 +610,7 @@ void loop() {
   }
 
   static Vec2 lastV;                 // speed sent last loop (ultrasonic lag)
+  orbitSlide(v);                     // orbit blocked by a brake side: slide along the line
   goalSlow(v);                       // near the goals (camera)
   usField(v, lastV);                 // walls (ultrasonic), exponential
   armBrake(v);                       // mux 2: no move toward a side that sees a line
@@ -601,7 +631,7 @@ void loop() {
     Serial.printf("%-6s | ball %s %5.1f s%2u > %4.1f | orbit g %.2f | hold %d%s | line %08lX arm %X %s %5.1f | "
                   "us F %3.0f R %3.0f B %3.0f L %3.0f cut F %.1f | goal k %.2f area %4.0f | v (%4.0f, %4.0f) | "
                   "link %lu pk bad %lu junk %lu gap %lu ms\n",
-                  modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
+                  slide4 ? "SLIDE" : modeName3[mode], irBall.found ? "Y" : "-", irBall.angle, irBall.strength,
                   strUsed, orbitG, has_ball(), aimLocked ? " LOCK" : "", lineData.state, armSeen4,
                   lineOn ? "ON  " : lineCrossed ? "OVER" : lineLock ? "LOCK" : "-   ", lineLock ? lineDirField : -1.0f,
                   usCm3(US_N_FRONT), usCm3(US_N_RIGHT), usCm3(US_N_BACK), usCm3(US_N_LEFT),
